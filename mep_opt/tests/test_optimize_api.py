@@ -1,0 +1,88 @@
+from fastapi.testclient import TestClient
+
+from mep_opt.optimizer.problem import OptimizationResult, ParetoSolution
+from mep_opt.web import main as web_main
+
+
+class DummyInfeasibleSearch:
+    """Stub optimizer that returns a fallback non-adequate design."""
+
+    def __init__(self, problem):
+        self.problem = problem
+
+    def run(self):
+        perf = {
+            "overall_adequate": False,
+            "CDF_fatigue": 12345.0,
+            "CDF_rutting": 67890.0,
+            "governing_mode": "fatigue",
+            "msa": 100.0,
+            "layers": [
+                {"id": 1, "name": "BC", "thickness": 30.0, "modulus": 3000.0},
+                {"id": 2, "name": "WMM", "thickness": 150.0, "modulus": 500.0},
+                {"id": 3, "name": "Subgrade", "thickness": 0.0, "modulus": 80.0},
+            ],
+        }
+
+        prelim = ParetoSolution(
+            optimal_thicknesses=[30.0, 150.0],
+            optimal_materials={},
+            cost=123456.0,
+            co2=987.0,
+            performance=perf,
+        )
+
+        return OptimizationResult(
+            optimal_thicknesses=prelim.optimal_thicknesses,
+            optimal_materials={},
+            layer_types=["BC", "WMM"],
+            cost=prelim.cost,
+            co2=prelim.co2,
+            is_feasible=False,
+            performance=perf,
+            pareto_front=[prelim],
+        )
+
+
+def test_optimize_endpoint_hides_infeasible_fallback_designs(monkeypatch):
+    monkeypatch.setattr(web_main, "SmartPavementSearch", DummyInfeasibleSearch)
+    client = TestClient(web_main.app)
+
+    payload = {
+        "cvpd": 3000,
+        "growth_rate": 0.05,
+        "design_life": 20,
+        "vdf": 2.5,
+        "lane_factor": 0.75,
+        "subgrade_cbr": 8.0,
+        "reliability": "90%",
+        "temperature": 35.0,
+        "layers": [
+            {
+                "layer_type": "BC",
+                "min_thickness": 30,
+                "max_thickness": 50,
+                "is_fixed": False,
+                "fixed_thickness": 0,
+                "E": 3000,
+                "nu": 0.35,
+            },
+            {
+                "layer_type": "WMM",
+                "min_thickness": 150,
+                "max_thickness": 250,
+                "is_fixed": False,
+                "fixed_thickness": 0,
+                "E": 500,
+                "nu": 0.35,
+            },
+        ],
+    }
+
+    response = client.post("/api/optimize", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert body["is_adequate"] is False
+    assert body["adequate_designs"] == []

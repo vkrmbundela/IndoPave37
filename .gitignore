@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node/Vite frontend
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+
+# Logs
+*.log
+
+# Local env files
+.env
+.env.*
+!frontend/.env.production.example
+
+# Editor/OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Misc
+*.local
+
+# AI and Assistant Files
+/.claude/
+CLAUDE.md
+/knowledge/
+Gemini_*.png
+
+# Local Documentation
+FlexPave_Advanced_Spec.md
+IITPAVE_Workflow_Guide.md
+MEP_OPT_PRD.md
+DEPLOYMENT_GUIDE.md
+
+# Tools
+tools/
+
+# Fortran Temp Files
+*.INP
+*.OUT
+*.DAT
+IITPAVE.IN
+FPAVE11.IN

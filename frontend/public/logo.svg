@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none">
+  <!-- Pavement layers (cross-section) -->
+  <rect x="4" y="8" width="32" height="6" rx="1.5" fill="#1e293b"/>
+  <rect x="4" y="15" width="32" height="5" rx="1" fill="#475569"/>
+  <rect x="4" y="21" width="32" height="5" rx="1" fill="#94a3b8"/>
+  <rect x="4" y="27" width="32" height="5" rx="1" fill="#cbd5e1">
+    <!-- Subgrade dots -->
+    <animate attributeName="opacity" values="0.7;1;0.7" dur="3s" repeatCount="indefinite"/>
+  </rect>
+  <!-- Flex curve (deflection bowl) -->
+  <path d="M4 8 Q12 5, 20 3 Q28 5, 36 8" stroke="#f59e0b" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+  <!-- Load arrow -->
+  <line x1="20" y1="0" x2="20" y2="3" stroke="#ea580c" stroke-width="1.8" stroke-linecap="round"/>
+  <polygon points="17,3 23,3 20,6.5" fill="#ea580c"/>
+  <!-- Strain point markers -->
+  <circle cx="20" cy="14" r="1.5" fill="#f59e0b" opacity="0.9"/>
+  <circle cx="20" cy="26" r="1.5" fill="#f59e0b" opacity="0.6"/>
+  <!-- Analysis grid lines -->
+  <line x1="12" y1="8" x2="12" y2="32" stroke="#f59e0b" stroke-width="0.4" opacity="0.3" stroke-dasharray="1,2"/>
+  <line x1="28" y1="8" x2="28" y2="32" stroke="#f59e0b" stroke-width="0.4" opacity="0.3" stroke-dasharray="1,2"/>
+</svg>

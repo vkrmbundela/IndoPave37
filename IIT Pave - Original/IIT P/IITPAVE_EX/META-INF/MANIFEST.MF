@@ -1,0 +1,90 @@
+Manifest-Version: 1.0
+Ant-Version: Apache Ant 1.8.1
+X-COMMENT: Main-Class will be added automatically by build
+Created-By: 1.6.0_23-b05 (Sun Microsystems Inc.)
+Main-Class: NewJFrame1
+
+Name: NewJFrame$12.class
+SHA1-Digest: dTrVt5A1dbq45Ix85abik3+rTqA=
+
+Name: NewJFrame$7.class
+SHA1-Digest: +zpMa4TAPMxKOE4/DLa5PBuEitE=
+
+Name: Main.class
+SHA1-Digest: aRt0iWMv9nyK9D1lK2uU64ZAxH4=
+
+Name: NewJFrame$14.class
+SHA1-Digest: ZL3KyupKU9+RUdqL6/OEgIuGvRs=
+
+Name: NewJFrame$13.class
+SHA1-Digest: +T+zWdORLDM4CNFx6MuqrXG7a6w=
+
+Name: NewJFrame$9.class
+SHA1-Digest: geqsMRW1r7kaB6JSs1INS9hglhk=
+
+Name: NewJFrame1$1.class
+SHA1-Digest: 9PDCHYysyyD9cPKvW5yrJUKqSi0=
+
+Name: NewJFrame1.class
+SHA1-Digest: kK5aQT8KrPNCO/DaBiX8pF/lNgQ=
+
+Name: NewJFrame$11.class
+SHA1-Digest: Jp68LNoq7Gd20XKpvLPApT2ZrJQ=
+
+Name: javaapplication7/JavaApplication7.class
+SHA1-Digest: SNekbuwr1I2h0kVCRzQROYWW1Ik=
+
+Name: NewJFrame$2.class
+SHA1-Digest: QEiRVF1piycEgi/zzLHkWbRX6EQ=
+
+Name: NewJFrame$16.class
+SHA1-Digest: ernHSJXmXf62MXI4inb2N+a8l3g=
+
+Name: img1.png
+SHA1-Digest: hOP7KnTsmzt02plq4cHrRJluRf8=
+
+Name: NewJFrame$17.class
+SHA1-Digest: mHt+GRvGecoCiopkdGqVUZkyixg=
+
+Name: NewJFrame$3.class
+SHA1-Digest: nid622pJX8iP6Tf38jYqckFIAa4=
+
+Name: Main$1.class
+SHA1-Digest: Y12Dqvqyad5DDirzUcS9hUPsCwY=
+
+Name: NewJFrame$15.class
+SHA1-Digest: MyBMhnnB5I4BPvoynmWZHmI/50s=
+
+Name: NewJFrame$4.class
+SHA1-Digest: xapFa3H9+SQTZ8GizvveG8Vz2cI=
+
+Name: NewJFrame$6.class
+SHA1-Digest: ynd3PMpK8u1AmEqVu4w7pnRYO6I=
+
+Name: NewJFrame$10.class
+SHA1-Digest: pAPo0QxIw4jUFtr6TackU0nVNfY=
+
+Name: NewJFrame1$3.class
+SHA1-Digest: HgUmj/1T2pc1AhIjkZMT+IdW3fI=
+
+Name: NewJFrame$5.class
+SHA1-Digest: yd5/KiVewusi9igtaWvusaUy15o=
+
+Name: NewJFrame1$2.class
+SHA1-Digest: CnGgejHCefNyIY2THSo+A6Mi0Y8=
+
+Name: NewJFrame$8.class
+SHA1-Digest: 7RUyKZB2FAyAj1J+6JleQPCxdaM=
+
+Name: NewJFrame.class
+SHA1-Digest: r3xQWnH46ijyjnRHaS8Q2+W22eE=
+
+Name: META-INF/INDEX.LIST
+SHA1-Digest: 6dWUwZ2KXhgo2vMWz4T7ygpgZpY=
+
+Name: NewJFrame$1.class
+SHA1-Digest: an2MSg8Ws1TSzbKRKd18aMtwYhA=
+
+Name: AA.jpg
+SHA1-Digest: esQvt54aGAlULOWTdABIN8XnBEk=
+

@@ -1,0 +1,8 @@
+Note:
+
+1. Please install java latest version from http://java.com/en/download/index.jsp 
+before running IITPAVE
+
+2. After installing java run IITPAVE_EX.jar (Executalbe  jar file available in the folder
+
+3. Follow the steps explained during the training session

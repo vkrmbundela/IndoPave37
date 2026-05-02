@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<jnlp codebase="file:/D:/JavaApplication7/dist/" href="launch.jnlp" spec="1.0+">
+    <information>
+        <title>JavaApplication7</title>
+        <vendor>N Vamshi Vijay</vendor>
+        <homepage href=""/>
+        <description>JavaApplication7</description>
+        <description kind="short">JavaApplication7</description>
+
+    <icon href="img1.png" kind="default"/>
+</information>
+<update check="always"/>
+<security>
+<all-permissions/>
+</security>
+    <resources>
+<j2se version="1.6+"/>
+<jar href="JavaApplication7.jar" main="true"/>
+
+
+    <jar href="lib/AbsoluteLayout.jar"/>
+</resources>
+    <application-desc main-class="NewJFrame1">
+
+    </application-desc>
+</jnlp>
