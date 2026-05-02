@@ -337,6 +337,14 @@ async function runOptimization() {
     statusDiv.textContent = "Optimizing...";
     statusDiv.style.color = "var(--accent-warning)";
 
+    // Default material properties per layer type
+    const LAYER_DEFAULTS = {
+        BC:  { E: 1700, nu: 0.35 },
+        DBM: { E: 1400, nu: 0.35 },
+        WMM: { E: 300,  nu: 0.35 },
+        GSB: { E: 150,  nu: 0.35 },
+    };
+
     // 1. Gather Inputs
     const cvpd = parseFloat(document.getElementById('opt-cvpd').value);
     const growth = parseFloat(document.getElementById('opt-growth').value);
@@ -349,10 +357,14 @@ async function runOptimization() {
     const rows = document.querySelectorAll('#opt-layer-table tbody tr');
     const layers = [];
     rows.forEach(row => {
+        const layerType = row.querySelector('.inp-type').value;
+        const defaults = LAYER_DEFAULTS[layerType] || { E: 1000, nu: 0.35 };
         layers.push({
-            layer_type: row.querySelector('.inp-type').value,
+            layer_type: layerType,
             min_thickness: parseFloat(row.querySelector('.inp-min').value),
-            max_thickness: parseFloat(row.querySelector('.inp-max').value)
+            max_thickness: parseFloat(row.querySelector('.inp-max').value),
+            E: defaults.E,
+            nu: defaults.nu
         });
     });
 
@@ -370,7 +382,11 @@ async function runOptimization() {
             body: JSON.stringify(payload)
         });
 
-        if (!response.ok) throw new Error("Optimization Failed");
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            const detail = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
+            throw new Error(detail || "Server " + response.status);
+        }
 
         const data = await response.json();
 
