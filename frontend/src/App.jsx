@@ -308,7 +308,8 @@ export default function App() {
       });
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.detail || `Server ${res.status}`);
+        const detail = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
+        throw new Error(detail || `Server ${res.status}`);
       }
       const data = await res.json();
       setResults(data.results || []);
@@ -344,7 +345,8 @@ export default function App() {
       });
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.detail || `Server ${res.status}`);
+        const detail = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
+        throw new Error(detail || `Server ${res.status}`);
       }
       const data = await res.json();
       setOptimizedDesigns(data.adequate_designs || []);
