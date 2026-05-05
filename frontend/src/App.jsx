@@ -324,10 +324,11 @@ export default function App() {
   const [hasStarted, setHasStarted] = useState(savedData.hasStarted || false);
   const [materialRates, setMaterialRates] = useState(savedData.materialRates || DEFAULT_MATERIAL_RATES);
   const [showRatesPanel, setShowRatesPanel] = useState(savedData.showRatesPanel || false);
+  const [showCtbPanel, setShowCtbPanel] = useState(savedData.showCtbPanel || false);
   const [useCtbSpectrum, setUseCtbSpectrum] = useState(savedData.useCtbSpectrum || false);
   const [ctbSpectrumText, setCtbSpectrumText] = useState(savedData.ctbSpectrumText || '');
   const [ctbPerClassBridgeRecompute, setCtbPerClassBridgeRecompute] = useState(savedData.ctbPerClassBridgeRecompute || false);
-  const [debugMode, setDebugMode] = useState(savedData.debugMode || false);
+  const [debugMode, setDebugMode] = useState(false); // Default to off for production
   const fileInputRef = useRef(null);
 
   // Resizable splitters
@@ -341,7 +342,7 @@ export default function App() {
       cvpd, subgradeCbr, temperature, results, optimizationMode,
       optimizedDesigns, hasStarted, previewWidth, bottomHeight,
       materialRates, showRatesPanel,
-      useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
+      showCtbPanel, useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
     };
     localStorage.setItem('flexpave_cache', JSON.stringify(dataToSave));
   }, [
@@ -349,7 +350,7 @@ export default function App() {
     cvpd, subgradeCbr, temperature, results, optimizationMode,
     optimizedDesigns, hasStarted, previewWidth, bottomHeight,
     materialRates, showRatesPanel, debugMode,
-    useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
+    showCtbPanel, useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
   ]);
 
   const handleReset = () => {
@@ -543,7 +544,7 @@ export default function App() {
         <input type="file" ref={fileInputRef} onChange={handleImport} accept=".json" className="hidden"/>
         <div className="bg-white border border-gray-300 rounded-3xl shadow-2xl p-12 flex flex-col items-center max-w-sm w-full text-center">
           <div className="flex flex-col items-center mb-12">
-            <img src="/assets/logo_mark.png" alt="FlexPave Icon" className="h-40 w-auto mb-6 drop-shadow-lg" />
+            <img src="assets/logo_mark.png" alt="FlexPave Icon" className="h-40 w-auto mb-6 drop-shadow-lg" />
             <h1 className="text-4xl font-black text-slate-900 tracking-tight uppercase">FLEXPAVE</h1>
           </div>
           <div className="flex w-full gap-3">
@@ -566,9 +567,15 @@ export default function App() {
       {/* TOOLBAR */}
       <div className="flex-none flex items-center justify-between bg-white border-b border-gray-300 px-3 py-1.5">
         <div className="flex items-center gap-2.5">
-          <img src="/assets/logo_mark.png" alt="FlexPave" className="h-7 w-auto" />
+          <img src="assets/logo_mark.png" alt="FlexPave" className="h-7 w-auto" />
           <span className="text-sm font-bold text-slate-900 tracking-tight">FlexPave</span>
-          <span className="text-[10px] text-gray-400 ml-0.5">v1.0</span>
+          <span 
+            className="text-[10px] text-gray-400 ml-0.5 cursor-help"
+            onDoubleClick={() => setDebugMode(!debugMode)}
+            title="Double-click for debug mode"
+          >
+            v1.0
+          </span>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -581,6 +588,18 @@ export default function App() {
           >
             <Upload size={11}/> Import
           </button>
+          <button
+            onClick={() => setShowCtbPanel(!showCtbPanel)}
+            className={cn(
+              "px-2 py-1 text-[11px] rounded border font-medium flex items-center gap-1 select-none transition-colors",
+              showCtbPanel ? "bg-orange-50 border-orange-200 text-orange-700" : "text-gray-700 hover:bg-gray-100 border-gray-200"
+            )}
+            title="Toggle CTB Axle Spectrum Analysis"
+          >
+            <Activity size={12} />
+            CTB Analysis
+          </button>
+
           <button
             onClick={()=>setShowAdvanced(true)}
             className="px-2 py-1 text-[11px] text-orange-700 hover:bg-orange-50 rounded border border-orange-200 font-medium flex items-center gap-1 select-none"
@@ -828,9 +847,13 @@ export default function App() {
                     <label className="text-[10px] text-gray-500 font-medium w-14 text-right shrink-0">Spacing</label>
                     <input type="number" step="1" value={wheelSpacing} onChange={e=>setWheelSpacing(Number(e.target.value))} className={cn(inp,"flex-1 py-0")} />
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <label className="text-[10px] text-gray-500 font-medium w-14 text-right shrink-0">Debug</label>
-                    <input type="checkbox" checked={debugMode} onChange={e=>setDebugMode(e.target.checked)} className="cursor-pointer" />
+                  <div className="flex items-center gap-1.5 h-4">
+                    {debugMode && (
+                      <>
+                        <label className="text-[10px] text-red-500 font-bold w-14 text-right shrink-0">DEBUG</label>
+                        <input type="checkbox" checked={debugMode} onChange={e=>setDebugMode(e.target.checked)} className="cursor-pointer" />
+                      </>
+                    )}
                   </div>
                 </div>
               </fieldset>
@@ -851,61 +874,69 @@ export default function App() {
               </fieldset>
 
               {/* CTB Spectrum */}
-              <fieldset className="border border-gray-200 rounded px-2 pt-0.5 pb-1.5 w-72 flex-none">
-                <legend className="text-[10px] font-bold uppercase text-gray-400 tracking-wide px-1 flex items-center justify-between gap-2 w-full">
-                  <span>CTB Spectrum</span>
-                  <div className="flex items-center gap-2 text-[10px] font-medium text-gray-500 normal-case tracking-normal">
-                    <label className="flex items-center gap-1 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={useCtbSpectrum}
-                        onChange={e => {
-                          const enabled = e.target.checked;
-                          setUseCtbSpectrum(enabled);
-                          if (enabled && !ctbSpectrumText.trim()) {
-                            setCtbSpectrumText(DEFAULT_CTB_AXLE_SPECTRUM_TEXT);
-                          }
+              {showCtbPanel && (
+                <fieldset className="border border-orange-200 bg-orange-50/20 rounded px-2 pt-0.5 pb-1.5 w-72 flex-none animate-in fade-in slide-in-from-left-2 duration-300">
+                  <legend className="text-[10px] font-bold uppercase text-orange-600 tracking-wide px-1 flex items-center justify-between gap-2 w-full bg-white rounded border border-orange-100 py-0.5">
+                    <div className="flex items-center gap-1">
+                      <Activity size={10} />
+                      <span>CTB Axle Spectrum</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] font-medium text-gray-500 normal-case tracking-normal">
+                      <label className="flex items-center gap-1 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={useCtbSpectrum}
+                          onChange={e => {
+                            const enabled = e.target.checked;
+                            setUseCtbSpectrum(enabled);
+                            if (enabled && !ctbSpectrumText.trim()) {
+                              setCtbSpectrumText(DEFAULT_CTB_AXLE_SPECTRUM_TEXT);
+                            }
+                          }}
+                        />
+                        Enable
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={ctbPerClassBridgeRecompute}
+                          onChange={e => setCtbPerClassBridgeRecompute(e.target.checked)}
+                        />
+                        Per-class
+                      </label>
+                    </div>
+                  </legend>
+                  <div className="flex flex-col gap-1 mt-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-[9px] text-orange-800 leading-tight">
+                        <strong>Info:</strong> Define specific axle groups for Cement Treated Base fatigue analysis. 
+                        Overrides default IRC reference damage values.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUseCtbSpectrum(true);
+                          setCtbSpectrumText(DEFAULT_CTB_AXLE_SPECTRUM_TEXT);
                         }}
-                      />
-                      Enable
-                    </label>
-                    <label className="flex items-center gap-1 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={ctbPerClassBridgeRecompute}
-                        onChange={e => setCtbPerClassBridgeRecompute(e.target.checked)}
-                      />
-                      Per-class bridge
-                    </label>
+                        className="text-[9px] text-orange-700 font-bold hover:bg-orange-100 px-1 py-0.5 rounded border border-orange-300 bg-white shrink-0"
+                      >
+                        Load Example
+                      </button>
+                    </div>
+                    <textarea
+                      value={ctbSpectrumText}
+                      onChange={e => setCtbSpectrumText(e.target.value)}
+                      rows={6}
+                      spellCheck={false}
+                      placeholder={DEFAULT_CTB_AXLE_SPECTRUM_TEXT}
+                      className={cn(inp, "w-full min-h-24 resize-y font-mono text-[10px] leading-4 border-orange-200 focus:ring-orange-500")}
+                    />
+                    <p className="text-[8px] text-gray-500">
+                      Format: Array of objects with <code>axle_type</code>, <code>load_kn</code>, and <code>expected_repetitions</code>.
+                    </p>
                   </div>
-                </legend>
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] text-gray-500">JSON array of axle groups in kN and repetitions.</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setUseCtbSpectrum(true);
-                        setCtbSpectrumText(DEFAULT_CTB_AXLE_SPECTRUM_TEXT);
-                      }}
-                      className="text-[10px] text-orange-700 hover:bg-orange-50 px-1 py-0.5 rounded border border-orange-200"
-                    >
-                      Load example
-                    </button>
-                  </div>
-                  <textarea
-                    value={ctbSpectrumText}
-                    onChange={e => setCtbSpectrumText(e.target.value)}
-                    rows={6}
-                    spellCheck={false}
-                    placeholder={DEFAULT_CTB_AXLE_SPECTRUM_TEXT}
-                    className={cn(inp, "w-full min-h-24 resize-y font-mono text-[10px] leading-4")}
-                  />
-                  <p className="text-[9px] text-gray-400 leading-tight">
-                    Required shape: [{"{"} axle_type, load_kn, expected_repetitions {"}"}]. Leave disabled to use the reference CTB path.
-                  </p>
-                </div>
-              </fieldset>
+                </fieldset>
+              )}
 
               {/* Action Buttons */}
               <div className="flex flex-col gap-1.5 justify-center flex-none">
