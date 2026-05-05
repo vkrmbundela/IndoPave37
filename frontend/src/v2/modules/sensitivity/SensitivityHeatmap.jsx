@@ -38,12 +38,15 @@ export default function SensitivityHeatmap({ sharedState }) {
         load: sharedState.load,
         pressure: sharedState.pressure,
         is_dual: sharedState.wheelType === 'Dual',
-        spacing: 310,
+        // Pull spacing & reliability from sharedState so the sensitivity
+        // analysis is consistent with the cockpit configuration. Falls
+        // back to IRC defaults only if the cockpit hasn't initialized them.
+        spacing: sharedState.wheelSpacing ?? 310,
       },
       eval_points: points,
       cumulative_msa: msa,
       mix_modulus: mixE,
-      reliability: 80,
+      reliability: sharedState.reliabilityPercent ?? 80,
     });
 
     if (resp?.status === 'ok') setResult(resp.layers);

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Save, Play, Settings, Plus, Trash2, ArrowRight, Table2, Loader2, Info, X, Download, Upload, Book, RotateCcw, Database, Layers, Zap, AlertCircle, MoreHorizontal
+  Save, Play, Settings, Plus, Trash2, ArrowRight, Table2, Loader2, Info, X, Download, Upload, Book, RotateCcw, Database, Layers, Zap, AlertCircle, MoreHorizontal, IndianRupee
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -11,6 +11,42 @@ function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeCtbAxleSpectrum(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error('CTB spectrum must be a JSON array of axle groups.');
+  }
+
+  return parsed.map((entry, index) => {
+    const axleType = String(entry?.axle_type ?? '').trim();
+    const loadKn = Number(entry?.load_kn);
+    const repetitions = Number(entry?.expected_repetitions);
+
+    if (!axleType) {
+      throw new Error(`CTB spectrum row ${index + 1}: axle_type is required`);
+    }
+    if (!Number.isFinite(loadKn) || loadKn <= 0) {
+      throw new Error(`CTB spectrum row ${index + 1}: load_kn must be a positive number`);
+    }
+    if (!Number.isFinite(repetitions) || repetitions < 0) {
+      throw new Error(`CTB spectrum row ${index + 1}: expected_repetitions must be non-negative`);
+    }
+
+    return {
+      axle_type: axleType,
+      load_kn: loadKn,
+      expected_repetitions: repetitions,
+    };
+  });
+}
+
 /* ─── Drag-to-resize hook ─── */
 function useSplitter(initialValue, direction) {
   const [size, setSize] = useState(initialValue);
@@ -18,15 +54,23 @@ function useSplitter(initialValue, direction) {
   const startPos = useRef(0);
   const startSize = useRef(0);
 
-  const onMouseDown = useCallback((e) => {
+  const onPointerDown = useCallback((e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
     dragging.current = true;
     startPos.current = direction === 'horizontal' ? e.clientX : e.clientY;
     startSize.current = size;
     document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
     document.body.style.userSelect = 'none';
+    if (e.currentTarget?.setPointerCapture) {
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // Ignore capture failures and fall back to window listeners.
+      }
+    }
 
-    const onMouseMove = (ev) => {
+    const onPointerMove = (ev) => {
       if (!dragging.current) return;
       const delta = direction === 'horizontal'
         ? startPos.current - ev.clientX  // for right-side panel, dragging left = bigger
@@ -35,19 +79,21 @@ function useSplitter(initialValue, direction) {
       setSize(newSize);
     };
 
-    const onMouseUp = () => {
+    const onPointerUp = () => {
       dragging.current = false;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
     };
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
   }, [size, direction]);
 
-  return [size, onMouseDown];
+  return [size, onPointerDown];
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
@@ -135,6 +181,41 @@ const DEMO_CASES = [
   }
 ];
 
+const DEFAULT_MATERIAL_RATES = {
+  BC: { cost_per_cum: 12500, co2_per_cum: 180 },
+  DBM: { cost_per_cum: 10800, co2_per_cum: 165 },
+  SMA: { cost_per_cum: 14000, co2_per_cum: 195 },
+  SDBC: { cost_per_cum: 9800, co2_per_cum: 160 },
+  BM: { cost_per_cum: 8500, co2_per_cum: 145 },
+  WMM: { cost_per_cum: 2800, co2_per_cum: 35 },
+  WBM: { cost_per_cum: 2500, co2_per_cum: 30 },
+  GSB: { cost_per_cum: 1800, co2_per_cum: 25 },
+  CTB: { cost_per_cum: 3500, co2_per_cum: 120 },
+  RAP: { cost_per_cum: 6000, co2_per_cum: 85 },
+};
+
+const DEFAULT_CTB_AXLE_SPECTRUM_TEXT = JSON.stringify([
+  { axle_type: 'single', load_kn: 80, expected_repetitions: 1000000 },
+  { axle_type: 'tandem', load_kn: 120, expected_repetitions: 200000 },
+  { axle_type: 'tridem', load_kn: 180, expected_repetitions: 50000 },
+], null, 2);
+
+/*
+ * Design assumptions used across the main cockpit AND the advanced modules.
+ * Keeping them here makes this the single source of truth — when the user
+ * changes (or the UI eventually surfaces) any of these, both /api/optimize
+ * and every advanced panel see the same values automatically.
+ *
+ * Defaults follow IRC 37:2018 typical values.
+ */
+const DESIGN_DEFAULTS = {
+  growthRate: 0.05,         // 5% per annum
+  designLife: 20,           // years
+  ldf: 0.75,                // lane distribution factor
+  vdf: 2.5,                 // vehicle damage factor
+  reliabilityPercent: 80,   // R80 (low-volume) — switch to 90 for ≥30 MSA
+};
+
 /* ─── Compact Cross-Section SVG ─── */
 function PavementVisualizer({ layers, points, wheelType }) {
   const surfaceY = 45;
@@ -207,14 +288,25 @@ function PavementVisualizer({ layers, points, wheelType }) {
 }
 
 export default function App() {
-  // Load initial state from localStorage if available
-  const savedData = JSON.parse(localStorage.getItem('flexpave_cache') || '{}');
+  // Load initial state from localStorage if available. A corrupted blob
+  // (or a quota / disabled-storage exception) must NOT crash the whole
+  // app — fall back to defaults instead.
+  let savedData;
+  try {
+    savedData = JSON.parse(localStorage.getItem('flexpave_cache') || '{}');
+    if (typeof savedData !== 'object' || savedData === null || Array.isArray(savedData)) {
+      savedData = {};
+    }
+  } catch {
+    savedData = {};
+  }
 
   const [layers, setLayers] = useState(savedData.layers || DEFAULT_LAYERS);
   const [numLayers, setNumLayers] = useState(savedData.numLayers || 5);
   const [load, setLoad] = useState(savedData.load || 20000);
   const [pressure, setPressure] = useState(savedData.pressure || 0.56);
   const [wheelType, setWheelType] = useState(savedData.wheelType || 'Dual');
+  const [wheelSpacing, setWheelSpacing] = useState(savedData.wheelSpacing || 310);
   const [points, setPoints] = useState(savedData.points || DEFAULT_POINTS);
   const [numPoints, setNumPoints] = useState(savedData.numPoints || 4);
   const [cvpd, setCvpd] = useState(savedData.cvpd || 800);
@@ -230,24 +322,34 @@ export default function App() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [hasStarted, setHasStarted] = useState(savedData.hasStarted || false);
+  const [materialRates, setMaterialRates] = useState(savedData.materialRates || DEFAULT_MATERIAL_RATES);
+  const [showRatesPanel, setShowRatesPanel] = useState(savedData.showRatesPanel || false);
+  const [useCtbSpectrum, setUseCtbSpectrum] = useState(savedData.useCtbSpectrum || false);
+  const [ctbSpectrumText, setCtbSpectrumText] = useState(savedData.ctbSpectrumText || '');
+  const [ctbPerClassBridgeRecompute, setCtbPerClassBridgeRecompute] = useState(savedData.ctbPerClassBridgeRecompute || false);
+  const [debugMode, setDebugMode] = useState(savedData.debugMode || false);
   const fileInputRef = useRef(null);
 
   // Resizable splitters
   const [previewWidth, onPreviewDrag] = useSplitter(savedData.previewWidth || 300, 'horizontal');
-  const [bottomHeight, onBottomDrag] = useSplitter(savedData.bottomHeight || 280, 'vertical');
+  const [bottomHeight, onBottomDrag] = useSplitter(clamp(savedData.bottomHeight || 380, 380, 520), 'vertical');
 
   // Auto-Save Effect
   useEffect(() => {
     const dataToSave = {
-      layers, numLayers, load, pressure, wheelType, points, numPoints,
-      cvpd, subgradeCbr, temperature, results, optimizationMode, 
-      optimizedDesigns, hasStarted, previewWidth, bottomHeight
+      layers, numLayers, load, pressure, wheelType, wheelSpacing, points, numPoints,
+      cvpd, subgradeCbr, temperature, results, optimizationMode,
+      optimizedDesigns, hasStarted, previewWidth, bottomHeight,
+      materialRates, showRatesPanel,
+      useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
     };
     localStorage.setItem('flexpave_cache', JSON.stringify(dataToSave));
   }, [
-    layers, numLayers, load, pressure, wheelType, points, numPoints,
-    cvpd, subgradeCbr, temperature, results, optimizationMode, 
-    optimizedDesigns, hasStarted, previewWidth, bottomHeight
+    layers, numLayers, load, pressure, wheelType, wheelSpacing, points, numPoints,
+    cvpd, subgradeCbr, temperature, results, optimizationMode,
+    optimizedDesigns, hasStarted, previewWidth, bottomHeight,
+    materialRates, showRatesPanel, debugMode,
+    useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
   ]);
 
   const handleReset = () => {
@@ -262,6 +364,7 @@ export default function App() {
 
   const updateLayer = (idx, f, v) => setLayers(prev => prev.map((l,i) => i===idx ? {...l,[f]:v} : l));
   const updatePoint = (idx, f, v) => setPoints(prev => prev.map((p,i) => i===idx ? {...p,[f]:v} : p));
+  const updateMaterialRate = (code, field, value) => setMaterialRates(prev => ({ ...prev, [code]: { ...(prev[code]||{}), [field]: value } }));
 
   useEffect(() => {
     setLayers(prev => {
@@ -283,8 +386,7 @@ export default function App() {
   const doSingleRun = async (overrides = null) => {
     setIsSolving(true); setError(null); setResults(null); setOptimizedDesigns(null); setOptimizationMode(false);
     try {
-      // Logic: If overrides is a demo object (has layers), use it; 
-      // otherwise (if it's a click event or null), use current state.
+      // If overrides is a demo object (has .layers), use it; otherwise use current state.
       const isDemo = overrides && overrides.layers;
       const targetLayers = isDemo ? overrides.layers : layers;
       const targetLoad = isDemo ? overrides.load : load;
@@ -293,16 +395,17 @@ export default function App() {
       const targetPoints = isDemo ? overrides.points : points;
 
       const res = await fetch(`${API_BASE}/api/solve`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           layers: targetLayers.map((l, i) => ({
             E: l.E,
             nu: l.nu,
-            h: i === targetLayers.length - 1 ? 0 : (l.is_fixed ? (l.fixed_h || 0) : (l.min_h || 0))
+            h: i === targetLayers.length - 1 ? 0 : (l.is_fixed ? (l.fixed_h || 0) : (l.min_h || 0)),
           })),
           wheel_load: targetLoad,
           tire_pressure: targetPressure,
           wheel_type: targetWheelType,
+          wheel_spacing: wheelSpacing,
           points: targetPoints.map(p => ({ z: p.z, r: p.r })),
         }),
       });
@@ -313,13 +416,17 @@ export default function App() {
       }
       const data = await res.json();
       setResults(data.results || []);
-    } catch(e) { setError(e.message); }
-    finally { setIsSolving(false); }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setIsSolving(false);
+    }
   };
 
   const doOptimize = async () => {
     setIsSolving(true); setError(null); setOptimizedDesigns(null); setResults(null); setOptimizationMode(true);
     try {
+      const parsedCtbSpectrum = useCtbSpectrum ? normalizeCtbAxleSpectrum(ctbSpectrumText) : null;
       const res = await fetch(`${API_BASE}/api/optimize`, {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
@@ -335,12 +442,19 @@ export default function App() {
           cvpd,
           subgrade_cbr: subgradeCbr,
           temperature,
-          growth_rate: 0.05, // Fixed: Use fraction (e.g., 0.05 for 5%) to avoid astronomical traffic
-          design_life: 20,  // Default 20 years
+          growth_rate: DESIGN_DEFAULTS.growthRate,
+          design_life: DESIGN_DEFAULTS.designLife,
+          lane_factor: DESIGN_DEFAULTS.ldf,
+          vdf: DESIGN_DEFAULTS.vdf,
+          reliability: `${DESIGN_DEFAULTS.reliabilityPercent}%`,
           wheel_load: load,
           tire_pressure: pressure,
           wheel_type: wheelType,
+          wheel_spacing: wheelSpacing,
           points: points.map(p=>({z:p.z, r:p.r})),
+          material_rates: materialRates,
+          ctb_axle_spectrum: parsedCtbSpectrum && parsedCtbSpectrum.length ? parsedCtbSpectrum : undefined,
+          ctb_per_class_bridge_recompute: ctbPerClassBridgeRecompute,
         }),
       });
       if (!res.ok) {
@@ -355,7 +469,11 @@ export default function App() {
   };
 
   const handleExport = () => {
-    const cfg = {layers,numLayers,load,pressure,wheelType,points,numPoints,cvpd,subgradeCbr,temperature};
+    const cfg = {
+      layers, numLayers, load, pressure, wheelType, points, numPoints,
+      cvpd, subgradeCbr, temperature, materialRates, showRatesPanel,
+      useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
+    };
     const b = new Blob([JSON.stringify(cfg,null,2)],{type:'application/json'});
     const u = URL.createObjectURL(b);
     const a = document.createElement('a'); a.href=u; a.download='flexpave_config.json'; a.click();
@@ -380,6 +498,11 @@ export default function App() {
         if (hasValue(d.cvpd)) setCvpd(d.cvpd);
         if (hasValue(d.subgradeCbr)) setSubgradeCbr(d.subgradeCbr);
         if (hasValue(d.temperature)) setTemperature(d.temperature);
+        if (d.materialRates) setMaterialRates(d.materialRates);
+        if (hasValue(d.showRatesPanel)) setShowRatesPanel(d.showRatesPanel);
+        if (hasValue(d.useCtbSpectrum)) setUseCtbSpectrum(d.useCtbSpectrum);
+        if (hasValue(d.ctbSpectrumText)) setCtbSpectrumText(d.ctbSpectrumText);
+        if (hasValue(d.ctbPerClassBridgeRecompute)) setCtbPerClassBridgeRecompute(d.ctbPerClassBridgeRecompute);
       } catch { alert("Invalid config."); }
       setHasStarted(true);
     };
@@ -627,7 +750,7 @@ export default function App() {
             </div>
 
             {/* Bottom strip: Analysis Points | Load Config | Opt Target | Actions */}
-            <div className="px-3 py-2 flex gap-3 items-stretch">
+            <div className="px-3 py-2 flex flex-wrap gap-3 items-stretch">
 
               {/* Analysis Points — proper mini table */}
               <fieldset className="flex-1 border border-gray-200 rounded px-2 pt-0.5 pb-1.5 min-w-0">
@@ -658,6 +781,31 @@ export default function App() {
                 </table>
               </fieldset>
 
+              {/* Material Rates Panel */}
+              <fieldset className="border border-gray-200 rounded px-2 pt-0.5 pb-1.5 w-56 flex-none">
+                <legend className="text-[10px] font-bold uppercase text-gray-400 tracking-wide px-1 flex items-center justify-between">
+                  <span>Material Rates</span>
+                  <button onClick={() => setShowRatesPanel(v => !v)} className="text-[10px] text-gray-500 ml-2 px-1 py-0.5 rounded hover:bg-gray-100">{showRatesPanel ? 'Hide' : 'Show'}</button>
+                </legend>
+                {showRatesPanel ? (
+                  <div className="flex flex-col gap-1 max-h-40 overflow-auto">
+                    <div className="flex items-center gap-2 text-[10px] font-semibold text-gray-400 uppercase tracking-wide pl-12 pr-1">
+                      <span className="w-24 text-center">Cost / m³</span>
+                      <span className="w-20 text-center">CO2 / m³</span>
+                    </div>
+                    {Object.keys(materialRates).map((m) => (
+                      <div key={m} className="flex items-center gap-2">
+                        <div className="w-12 text-[11px] font-bold text-gray-700">{m}</div>
+                        <input type="number" step="1" value={materialRates[m].cost_per_cum || ''} onChange={e=>updateMaterialRate(m,'cost_per_cum', Number(e.target.value))} className={cn(inp,'w-24')}/>
+                        <input type="number" step="1" value={materialRates[m].co2_per_cum || ''} onChange={e=>updateMaterialRate(m,'co2_per_cum', Number(e.target.value))} className={cn(inp,'w-20')}/>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-gray-500">Using custom material rates</div>
+                )}
+              </fieldset>
+
               {/* Load Configuration */}
               <fieldset className="border border-gray-200 rounded px-2 pt-0.5 pb-1.5 w-44 flex-none">
                 <legend className="text-[10px] font-bold uppercase text-gray-400 tracking-wide px-1">Load Config</legend>
@@ -676,6 +824,14 @@ export default function App() {
                       <option value="Single">Single</option><option value="Dual">Dual</option>
                     </select>
                   </div>
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-[10px] text-gray-500 font-medium w-14 text-right shrink-0">Spacing</label>
+                    <input type="number" step="1" value={wheelSpacing} onChange={e=>setWheelSpacing(Number(e.target.value))} className={cn(inp,"flex-1 py-0")} />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-[10px] text-gray-500 font-medium w-14 text-right shrink-0">Debug</label>
+                    <input type="checkbox" checked={debugMode} onChange={e=>setDebugMode(e.target.checked)} className="cursor-pointer" />
+                  </div>
                 </div>
               </fieldset>
 
@@ -691,6 +847,63 @@ export default function App() {
                     <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">CBR %</label>
                     <input type="number" value={subgradeCbr} onChange={e=>setSubgradeCbr(Number(e.target.value))} className={cn(inp,"flex-1 py-0")}/>
                   </div>
+                </div>
+              </fieldset>
+
+              {/* CTB Spectrum */}
+              <fieldset className="border border-gray-200 rounded px-2 pt-0.5 pb-1.5 w-72 flex-none">
+                <legend className="text-[10px] font-bold uppercase text-gray-400 tracking-wide px-1 flex items-center justify-between gap-2 w-full">
+                  <span>CTB Spectrum</span>
+                  <div className="flex items-center gap-2 text-[10px] font-medium text-gray-500 normal-case tracking-normal">
+                    <label className="flex items-center gap-1 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={useCtbSpectrum}
+                        onChange={e => {
+                          const enabled = e.target.checked;
+                          setUseCtbSpectrum(enabled);
+                          if (enabled && !ctbSpectrumText.trim()) {
+                            setCtbSpectrumText(DEFAULT_CTB_AXLE_SPECTRUM_TEXT);
+                          }
+                        }}
+                      />
+                      Enable
+                    </label>
+                    <label className="flex items-center gap-1 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={ctbPerClassBridgeRecompute}
+                        onChange={e => setCtbPerClassBridgeRecompute(e.target.checked)}
+                      />
+                      Per-class bridge
+                    </label>
+                  </div>
+                </legend>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-gray-500">JSON array of axle groups in kN and repetitions.</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUseCtbSpectrum(true);
+                        setCtbSpectrumText(DEFAULT_CTB_AXLE_SPECTRUM_TEXT);
+                      }}
+                      className="text-[10px] text-orange-700 hover:bg-orange-50 px-1 py-0.5 rounded border border-orange-200"
+                    >
+                      Load example
+                    </button>
+                  </div>
+                  <textarea
+                    value={ctbSpectrumText}
+                    onChange={e => setCtbSpectrumText(e.target.value)}
+                    rows={6}
+                    spellCheck={false}
+                    placeholder={DEFAULT_CTB_AXLE_SPECTRUM_TEXT}
+                    className={cn(inp, "w-full min-h-24 resize-y font-mono text-[10px] leading-4")}
+                  />
+                  <p className="text-[9px] text-gray-400 leading-tight">
+                    Required shape: [{"{"} axle_type, load_kn, expected_repetitions {"}"}]. Leave disabled to use the reference CTB path.
+                  </p>
                 </div>
               </fieldset>
 
@@ -711,8 +924,8 @@ export default function App() {
           {/* ── Vertical Splitter ── */}
           <div className="relative w-1.5 flex-none group">
             <div
-              onMouseDown={onPreviewDrag}
-              className="absolute -left-2 -right-2 top-0 bottom-0 cursor-col-resize z-10 select-none"
+              onPointerDown={onPreviewDrag}
+              className="absolute -left-3 -right-3 -top-3 -bottom-3 cursor-col-resize z-20 select-none touch-none"
               title="Drag to resize"
             />
             <div className="absolute inset-0 pointer-events-none bg-gray-200 group-hover:bg-orange-400 group-active:bg-orange-500 transition-colors" />
@@ -730,13 +943,13 @@ export default function App() {
         </div>
 
         {/* ── Horizontal Splitter ── */}
-        <div className="relative h-1.5 flex-none group">
+        <div className="relative h-3 flex-none group">
           <div
-            onMouseDown={onBottomDrag}
-            className="absolute left-0 right-0 -top-2 -bottom-2 cursor-row-resize z-10 select-none"
+            onPointerDown={onBottomDrag}
+            className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-3 cursor-row-resize z-20 select-none touch-none"
             title="Drag to resize"
           />
-          <div className="absolute inset-0 pointer-events-none bg-gray-200 group-hover:bg-orange-400 group-active:bg-orange-500 transition-colors" />
+          <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-0.5 pointer-events-none bg-gray-200 group-hover:bg-orange-400 group-active:bg-orange-500 transition-colors" />
         </div>
 
         {/* ═══ BOTTOM: Results ═══ */}
@@ -1019,7 +1232,17 @@ export default function App() {
 
       {showAdvanced && (
         <AdvancedPanel
-          sharedState={{ layers, numLayers, load, pressure, wheelType, temperature, points, numPoints, cvpd, subgradeCbr, results, optimizedDesigns }}
+          sharedState={{
+            layers, numLayers, load, pressure, wheelType, wheelSpacing,
+            temperature, points, numPoints, cvpd, subgradeCbr,
+            results, optimizedDesigns, materialRates,
+            // Single source of truth for design assumptions used by every advanced module
+            growthRate: DESIGN_DEFAULTS.growthRate,
+            designLife: DESIGN_DEFAULTS.designLife,
+            ldf: DESIGN_DEFAULTS.ldf,
+            vdf: DESIGN_DEFAULTS.vdf,
+            reliabilityPercent: DESIGN_DEFAULTS.reliabilityPercent,
+          }}
           onClose={() => setShowAdvanced(false)}
           onUpdateLayer={(idx, props) => {
             if (props.E !== undefined) updateLayer(idx, 'E', props.E);

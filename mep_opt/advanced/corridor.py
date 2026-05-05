@@ -32,21 +32,89 @@ def _to_reliability_level(value: Union[int, ReliabilityLevel]) -> ReliabilityLev
     }.get(int(value), ReliabilityLevel.R80)
 
 
+# Required CSV columns mapped to acceptable header aliases (case-insensitive).
+# Adding a new alias is the only safe way to accept a different header name —
+# silent fallbacks like `row.get("CVPD", "800")` are intentionally avoided
+# because they hide misspellings and missing data, both of which produce a
+# corridor design quietly built on guessed numbers.
+_CSV_COLUMN_ALIASES: dict[str, list[str]] = {
+    "chainage": ["Chainage"],
+    "cbr":      ["Subgrade_CBR", "CBR"],
+    "cvpd":     ["CVPD"],
+    "vdf":      ["VDF"],
+    "ldf":      ["LDF"],
+}
+
+
 def parse_corridor_csv(csv_text: str) -> list[dict]:
     """
     Parse a corridor CSV with columns:
-    Chainage, Subgrade_CBR, CVPD, VDF, LDF
+    Chainage, Subgrade_CBR (or CBR), CVPD, VDF, LDF.
+
+    Every required column must be present in the header; otherwise a
+    ``ValueError`` is raised with the missing column names listed. Empty
+    or non-numeric cells inside a row also raise a ``ValueError`` that
+    points back to the offending CSV row number.
     """
     reader = csv.DictReader(io.StringIO(csv_text))
-    sections = []
-    for row in reader:
-        sections.append({
-            "chainage": row.get("Chainage", "").strip(),
-            "cbr": float(row.get("Subgrade_CBR", row.get("CBR", "8"))),
-            "cvpd": float(row.get("CVPD", row.get("cvpd", "800"))),
-            "vdf": float(row.get("VDF", row.get("vdf", "2.5"))),
-            "ldf": float(row.get("LDF", row.get("ldf", "0.75"))),
-        })
+    if not reader.fieldnames:
+        raise ValueError("CSV is empty or has no header row")
+
+    # Case-insensitive alias resolution: build {canonical_field: actual_header}
+    headers_by_lower = {(h or "").strip().lower(): h for h in reader.fieldnames}
+    field_map: dict[str, str] = {}
+    missing: list[str] = []
+    for canonical, aliases in _CSV_COLUMN_ALIASES.items():
+        match = next(
+            (headers_by_lower[a.lower()] for a in aliases if a.lower() in headers_by_lower),
+            None,
+        )
+        if match is None:
+            missing.append(f"{canonical} (accepts: {', '.join(aliases)})")
+        else:
+            field_map[canonical] = match
+
+    if missing:
+        raise ValueError(
+            f"Corridor CSV is missing required column(s): {missing}. "
+            f"Found headers: {list(reader.fieldnames)}"
+        )
+
+    sections: list[dict] = []
+    for line_no, row in enumerate(reader, start=2):  # +1 header, +1 1-index
+        chainage_str = (row.get(field_map["chainage"]) or "").strip()
+        if not chainage_str:
+            raise ValueError(f"CSV row {line_no}: 'chainage' is empty")
+        try:
+            section = {
+                "chainage": chainage_str,
+                "cbr":  float(row[field_map["cbr"]]),
+                "cvpd": float(row[field_map["cvpd"]]),
+                "vdf":  float(row[field_map["vdf"]]),
+                "ldf":  float(row[field_map["ldf"]]),
+            }
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"CSV row {line_no}: could not parse a numeric value "
+                f"for chainage {chainage_str!r}: {exc}"
+            ) from exc
+
+        # Range sanity — the optimizer can't recover from these silently.
+        if section["cbr"] <= 0:
+            raise ValueError(f"CSV row {line_no}: cbr must be > 0 (got {section['cbr']})")
+        if section["cvpd"] <= 0:
+            raise ValueError(f"CSV row {line_no}: cvpd must be > 0 (got {section['cvpd']})")
+        if section["vdf"] <= 0:
+            raise ValueError(f"CSV row {line_no}: vdf must be > 0 (got {section['vdf']})")
+        if not (0.0 < section["ldf"] <= 1.0):
+            raise ValueError(
+                f"CSV row {line_no}: ldf must be in (0, 1] (got {section['ldf']})"
+            )
+        sections.append(section)
+
+    if not sections:
+        raise ValueError("Corridor CSV has a header but no data rows")
+
     return sections
 
 
@@ -55,6 +123,21 @@ def _run_single_section(section: dict, layer_constraints: list[dict],
                         reliability: int) -> dict:
     """Run GA optimization for a single chainage section."""
     try:
+        # Reject empty / malformed layer_constraints early so we surface a
+        # clear corridor-section error instead of an opaque crash inside
+        # the optimizer.
+        if not layer_constraints:
+            raise ValueError("layer_constraints must contain at least one layer")
+        seen_types: set[str] = set()
+        for c in layer_constraints:
+            l_type = c.get("layer_type")
+            if not l_type:
+                raise ValueError("Every layer_constraint must specify layer_type")
+            key = str(l_type).strip().upper()
+            if key in seen_types:
+                raise ValueError(f"Duplicate layer_type in constraints: {l_type}")
+            seen_types.add(key)
+
         traffic = TrafficInput(
             initial_aadt=0,
             commercial_vehicles_per_day=section["cvpd"],
@@ -83,10 +166,24 @@ def _run_single_section(section: dict, layer_constraints: list[dict],
                 )
                 thickness_bounds[l_type] = (fixed_t, fixed_t)
             else:
-                thickness_bounds[l_type] = (
-                    float(c["min_thickness"]),
-                    float(c["max_thickness"]),
-                )
+                lo = float(c["min_thickness"])
+                hi = float(c["max_thickness"])
+                if lo > hi:
+                    raise ValueError(
+                        f"layer_type {l_type!r}: min_thickness ({lo}) > "
+                        f"max_thickness ({hi})"
+                    )
+                thickness_bounds[l_type] = (lo, hi)
+
+        # Sanity: bounds dict must cover every layer_type we just collected.
+        # With the current loop this is always true, but the explicit check
+        # protects against future edits and matches Issue #9 in Issues.md.
+        missing_bounds = [lt for lt in layer_types if lt not in thickness_bounds]
+        if missing_bounds:
+            raise ValueError(
+                f"thickness_bounds missing for layer_types {missing_bounds} "
+                f"in section {section.get('chainage')!r}"
+            )
 
         # Build optimization problem
         problem = OptimizationProblem(

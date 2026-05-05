@@ -42,14 +42,17 @@ export default function MonteCarloPanel({ sharedState }) {
         load: sharedState.load,
         pressure: sharedState.pressure,
         is_dual: sharedState.wheelType === 'Dual',
-        spacing: 310,
+        // Pull spacing & reliability from sharedState so the Monte Carlo
+        // run uses the same dual-tire geometry & reliability the design
+        // was optimized at; fall back to IRC defaults if not set.
+        spacing: sharedState.wheelSpacing ?? 310,
       },
       eval_points: points,
       cumulative_msa: msa,
       mix_modulus: mixE,
       sigmas: [...sigmas, 0],
       n_simulations: nSims,
-      reliability: 80,
+      reliability: sharedState.reliabilityPercent ?? 80,
     });
 
     if (resp?.status === 'ok') setResult(resp);

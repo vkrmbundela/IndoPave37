@@ -6,8 +6,11 @@ how CDF_fatigue and CDF_rutting change — revealing which layer
 is most sensitive to construction error.
 """
 
+from typing import Dict, List, Optional
+
 from mep_opt.solver.legacy_bridge import run_bridge_from_stack
 from mep_opt.solver.irc37 import check_design_adequacy, ReliabilityLevel
+from mep_opt.advanced._strain_utils import extract_design_strains
 
 DELTAS = [-10, -5, 5, 10]  # mm perturbations
 
@@ -25,6 +28,7 @@ def compute_sensitivity(
     cumulative_msa: float,
     mix_modulus: float,
     reliability: int = 80,
+    point_roles: Optional[Dict[str, List[int]]] = None,
 ) -> list[dict]:
     """
     Compute CDF sensitivity for each non-subgrade layer.
@@ -35,6 +39,10 @@ def compute_sensitivity(
         eval_points: [{z, r}, ...]
         cumulative_msa: design traffic in MSA
         mix_modulus: bituminous mix modulus for fatigue calc
+        point_roles: optional mapping of role name → result indices, e.g.
+            ``{"bit_bottom": [0, 1], "sub_top": [2, 3]}``. When omitted,
+            the helper assumes the dashboard convention (first two
+            points at the bituminous bottom, next two at subgrade top).
 
     Returns:
         List of {layer_index, layer_name, deltas: [{delta_mm, CDF_f, CDF_r, eps_t, eps_v}]}
@@ -64,8 +72,9 @@ def compute_sensitivity(
 
             try:
                 res = run_bridge_from_stack(perturbed, load_data, eval_points)
-                eps_t = max(abs(r["eps_t"]) for r in res)
-                eps_v = max(abs(r["eps_z"]) for r in res)
+                # Role-aware extraction: never conflate bit-bottom with
+                # subgrade-top rows, and never crash on a short result list.
+                eps_t, eps_v = extract_design_strains(res, point_roles)
 
                 adequacy = check_design_adequacy(
                     eps_t, eps_v, cumulative_msa, mix_modulus, rel,

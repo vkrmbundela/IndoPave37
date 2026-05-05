@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from typing import Optional
 from enum import Enum
 
-from .irc37 import BitumenGrade, get_bituminous_modulus
+from .irc37 import (
+    BitumenGrade, MODIFIED_BITUMEN_GRADES,
+    get_bituminous_modulus, get_bm_modulus,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -34,10 +37,13 @@ class MaterialProperty:
 
 MATERIAL_DB: dict[str, MaterialProperty] = {
     # --- Bituminous layers ---
+    # default_modulus values follow IRC 37:2018 Table 9.2 at the design
+    # average annual pavement temperature of 35°C (the temperature at
+    # which the resilient modulus is measured per ASTM D7369-09).
     "BC": MaterialProperty(
         name="Bituminous Concrete (BC)",
         category="bituminous",
-        default_modulus=1250.0,   # VG30 @ 35 C
+        default_modulus=2000.0,   # VG30 @ 35°C, IRC 37:2018 Table 9.2
         poisson=0.35,
         density=2400.0,
         bitumen_grade=BitumenGrade.VG30,
@@ -45,7 +51,7 @@ MATERIAL_DB: dict[str, MaterialProperty] = {
     "DBM": MaterialProperty(
         name="Dense Bituminous Macadam (DBM)",
         category="bituminous",
-        default_modulus=1250.0,
+        default_modulus=2000.0,   # VG30 @ 35°C, IRC 37:2018 Table 9.2
         poisson=0.35,
         density=2350.0,
         bitumen_grade=BitumenGrade.VG30,
@@ -53,7 +59,7 @@ MATERIAL_DB: dict[str, MaterialProperty] = {
     "SMA": MaterialProperty(
         name="Stone Matrix Asphalt (SMA)",
         category="bituminous",
-        default_modulus=2000.0,   # PMB-40 @ 35 C
+        default_modulus=1600.0,   # Modified-bitumen mix @ 35°C, Table 9.2
         poisson=0.35,
         density=2450.0,
         bitumen_grade=BitumenGrade.PMB,
@@ -61,15 +67,20 @@ MATERIAL_DB: dict[str, MaterialProperty] = {
     "SDBC": MaterialProperty(
         name="Semi-Dense Bituminous Concrete (SDBC)",
         category="bituminous",
-        default_modulus=1250.0,
+        default_modulus=2000.0,   # VG30 @ 35°C, IRC 37:2018 Table 9.2
         poisson=0.35,
         density=2350.0,
         bitumen_grade=BitumenGrade.VG30,
     ),
     "BM": MaterialProperty(
+        # BM is given as a single fixed value at 35°C in IRC 37:2018 Table
+        # 9.2 (700 MPa for VG30; 500 for VG10). It does NOT follow the
+        # BC/DBM temperature curve. The "bituminous_macadam" category routes
+        # the modulus lookup through `get_bm_modulus()` instead of the
+        # BC/DBM table; using the BC/DBM curve over-stiffens BM by ~3×.
         name="Bituminous Macadam (BM)",
-        category="bituminous",
-        default_modulus=1250.0,
+        category="bituminous_macadam",
+        default_modulus=700.0,    # VG30 @ 35°C per IRC 37:2018 Table 9.2
         poisson=0.35,
         density=2300.0,
         bitumen_grade=BitumenGrade.VG30,
@@ -150,8 +161,18 @@ def get_modulus(type_code: str,
                 grade: Optional[BitumenGrade] = None,
                 temperature: float = 35.0) -> float:
     """
-    Get elastic modulus for a material, with temperature interpolation
-    for bituminous types.
+    Get elastic modulus for a material.
+
+    Branches per IRC 37:2018 Table 9.2:
+      - "bituminous"          → temperature-interpolated BC/DBM curve
+                                (also used for SMA, SDBC, RAP)
+      - "bituminous_macadam"  → fixed value at 35°C (BM only — IRC has
+                                no temperature curve for BM)
+      - granular / cement-treated / unknown → use the material's
+                                              `default_modulus` directly
+
+    The BM branch matters: BM with VG30 is 700 MPa per IRC, but routing
+    it through the BC/DBM curve gave 2000 MPa — about 3× too stiff.
 
     Args:
         type_code: Material type code (e.g. "BC", "WMM").
@@ -160,13 +181,36 @@ def get_modulus(type_code: str,
 
     Returns:
         Elastic modulus in MPa.
+
+    Raises:
+        ValueError: if a DBM-class layer is paired with a modified binder.
+            IRC 37:2018 page 40 explicitly: "Modified binders are not
+            recommended for the DBM layers due to the concern about the
+            recyclability of DBM layers with modified binders."
     """
     mat = get_material(type_code)
+    effective_grade = grade if grade is not None else mat.bitumen_grade
 
     if mat.category == "bituminous":
-        effective_grade = grade if grade is not None else mat.bitumen_grade
+        # Reject the IRC-disallowed DBM + modified-binder combination
+        if (
+            type_code.upper() == "DBM"
+            and effective_grade is not None
+            and effective_grade in MODIFIED_BITUMEN_GRADES
+        ):
+            raise ValueError(
+                f"DBM with modified binder {effective_grade.name} is not "
+                f"permitted by IRC 37:2018 page 40 (recyclability concern). "
+                f"Use VG30 or VG40 for DBM."
+            )
         if effective_grade is not None:
             return get_bituminous_modulus(effective_grade, temperature)
+
+    if mat.category == "bituminous_macadam":
+        # BM has fixed (non-temperature-dependent) modulus per Table 9.2
+        if effective_grade is not None:
+            return get_bm_modulus(effective_grade, temperature)
+        return mat.default_modulus
 
     # Granular / cement-treated / default
     return mat.default_modulus

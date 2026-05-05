@@ -53,6 +53,15 @@ class TestIRC37Criteria:
         result = gran.modulus(support)
         assert abs(result - expected) / expected < 0.01
 
+    def test_granular_modulus_cap(self):
+        """IRC 37:2018 Cl. 7.4.2: MR_gran <= 3 * MR_support"""
+        # With thickness=1000, 0.2 * 1000^0.45 * 50 = 0.2 * 22.38 * 50 = 223.8
+        # 3 * 50 = 150. Cap should kick in.
+        gran = GranularLayerInput(thickness=1000)
+        support = 50.0
+        result = gran.modulus(support)
+        assert result == 150.0, f"Expected 150.0 (3x support), got {result}"
+
     def test_fatigue_life_basic(self):
         """Fatigue life equation produces reasonable values."""
         eps_t = 200e-6
@@ -62,7 +71,10 @@ class TestIRC37Criteria:
         assert Nf < 1e12, f"Nf too high: {Nf}"
 
     def test_fatigue_life_reliability_ordering(self):
-        """Higher reliability -> fewer allowable repetitions."""
+        """
+        IRC 37:2018 only defines R80 and R90. Non-IRC levels (R95/R98/R99)
+        fall back to R90 to keep results compliant.
+        """
         eps_t = 200e-6
         modulus = 3000
         Nf_80 = fatigue_life(eps_t, modulus, ReliabilityLevel.R80)
@@ -70,7 +82,10 @@ class TestIRC37Criteria:
         Nf_95 = fatigue_life(eps_t, modulus, ReliabilityLevel.R95)
         Nf_98 = fatigue_life(eps_t, modulus, ReliabilityLevel.R98)
         Nf_99 = fatigue_life(eps_t, modulus, ReliabilityLevel.R99)
-        assert Nf_80 > Nf_90 > Nf_95 > Nf_98 > Nf_99
+        # R80 must allow more repetitions than R90 (IRC Table 12.3)
+        assert Nf_80 > Nf_90, "80% reliability should allow more repetitions than 90%"
+        # Non-IRC levels must collapse to R90 (no fabricated shifts)
+        assert Nf_95 == Nf_90 == Nf_98 == Nf_99
 
     def test_rutting_life_basic(self):
         """Rutting life equation produces reasonable values."""
@@ -81,15 +96,118 @@ class TestIRC37Criteria:
         assert NR_80 > 1e4
         assert NR_80 < 1e12
 
+    def test_fatigue_coefficients_match_irc_2018(self):
+        """
+        IRC 37:2018 page 16:
+            Nf = 1.6064 * C * 1e-4 * (1/εt)^3.89 * (1/MR)^0.854   (R80)
+            Nf = 0.5161 * C * 1e-4 * (1/εt)^3.89 * (1/MR)^0.854   (R90)
+        R90/R80 ratio must equal 0.5161/1.6064 ≈ 0.3213. The previous
+        implementation used 0.5161 for R80 and a 0.5 shift for R90,
+        producing R90/R80 = 0.5 (a different physical answer).
+        """
+        eps_t, modulus = 200e-6, 3000.0
+        nf80 = fatigue_life(eps_t, modulus, ReliabilityLevel.R80)
+        nf90 = fatigue_life(eps_t, modulus, ReliabilityLevel.R90)
+        # R80 must allow strictly more cycles than R90 (higher reliability,
+        # more conservative) — IRC ordering is preserved.
+        assert nf80 > nf90
+        # The ratio must match IRC 37 to 4 decimal places.
+        expected_ratio = 0.5161 / 1.6064
+        assert abs(nf90 / nf80 - expected_ratio) < 1e-4
+
+    def test_fatigue_life_uses_raw_strain_fraction_units(self):
+        """Bridge strains are returned as fractional strain, not microstrain."""
+        eps_t = 145.8e-6
+        modulus = 2000.0
+        nf = fatigue_life(eps_t, modulus, ReliabilityLevel.R90)
+
+        # Manual IRC formula using the same raw fractional strain should match.
+        M = 4.84 * (11.5 / (11.5 + 4.0) - 0.69)
+        expected = 0.5161e-4 * (10.0 ** M) * (1.0 / abs(eps_t)) ** 3.89 * (1.0 / modulus) ** 0.854
+        assert nf == pytest.approx(expected)
+        assert nf > 1e5
+
+    def test_bm_uses_fixed_modulus_not_bc_dbm_curve(self):
+        """
+        IRC 37:2018 Table 9.2: BM is given as a single fixed value at
+        35°C only (500 for VG10, 700 for VG30) — NOT a temperature curve.
+        Routing BM through the BC/DBM curve gave 2000 MPa (VG30 @ 35°C),
+        about 3× too stiff for the BM mix.
+        """
+        from mep_opt.solver.materials import get_modulus
+        # VG30 BM at 35°C — IRC says 700 MPa
+        assert get_modulus("BM", grade=BitumenGrade.VG30, temperature=35) == 700.0
+        # VG10 BM — IRC says 500 MPa
+        assert get_modulus("BM", grade=BitumenGrade.VG10, temperature=35) == 500.0
+        # Verify BC at 35°C is still on the BC/DBM curve (2000 MPa) —
+        # BM and BC must NOT share a path now.
+        assert get_modulus("BC", grade=BitumenGrade.VG30, temperature=35) == 2000.0
+
+    def test_dbm_with_modified_binder_is_rejected(self):
+        """
+        IRC 37:2018 page 40: 'Modified binders are not recommended for
+        the DBM layers due to the concern about the recyclability of
+        DBM layers with modified binders.' The optimizer raises rather
+        than silently mixing a non-permitted binder/mix combination.
+        """
+        from mep_opt.solver.materials import get_modulus
+        with pytest.raises(ValueError, match="not permitted"):
+            get_modulus("DBM", grade=BitumenGrade.PMB)
+        with pytest.raises(ValueError, match="not permitted"):
+            get_modulus("DBM", grade=BitumenGrade.CRMB)
+        with pytest.raises(ValueError, match="not permitted"):
+            get_modulus("DBM", grade=BitumenGrade.NRMB)
+        # BC with modified binder is allowed (Table 9.2 has a row for it)
+        assert get_modulus("BC", grade=BitumenGrade.PMB, temperature=35) == 1600.0
+
+    def test_nrmb_uses_modified_bitumen_row(self):
+        """NRMB shares the IRC:SP:53 modulus row with PMB and CRMB."""
+        from mep_opt.solver.irc37 import get_bituminous_modulus
+        assert get_bituminous_modulus(BitumenGrade.NRMB, 35) == 1600.0
+        assert get_bituminous_modulus(BitumenGrade.NRMB, 20) == 5700.0
+
+    def test_subgrade_modulus_capped_at_100mpa(self):
+        """
+        IRC 37:2018 Annex-II worked example (page 78):
+            'the effective modulus value will be limited to 100 MPa for
+            design purpose'.
+        High CBR (>15.8%) must clamp to 100, not produce 100+ MPa.
+        """
+        # Below the cap — uncapped formula applies
+        sub10 = SubgradeInput(cbr=10.0).modulus
+        assert abs(sub10 - 17.6 * (10 ** 0.64)) < 0.5
+        # At and above the cap — must clamp
+        assert SubgradeInput(cbr=20.0).modulus == 100.0
+        assert SubgradeInput(cbr=50.0).modulus == 100.0
+
+    def test_fatigue_life_rejects_zero_modulus(self):
+        """A zero or negative mix_modulus must raise rather than crash on division."""
+        with pytest.raises(ValueError, match="mix_modulus must be > 0"):
+            fatigue_life(eps_t=200e-6, mix_modulus=0.0)
+        with pytest.raises(ValueError, match="mix_modulus must be > 0"):
+            fatigue_life(eps_t=200e-6, mix_modulus=-1250.0)
+
+    def test_fatigue_life_rejects_zero_volume_total(self):
+        """Vb + Va == 0 would divide-by-zero in the volume term."""
+        with pytest.raises(ValueError, match="bitumen_volume \\+ air_voids"):
+            fatigue_life(eps_t=200e-6, mix_modulus=1250.0,
+                         air_voids=0.0, bitumen_volume=0.0)
+
     def test_rutting_life_reliability_ordering(self):
-        """Higher reliability -> fewer allowable repetitions."""
+        """
+        IRC 37:2018 only defines R80 and R90. Non-IRC levels (R95/R98/R99)
+        fall back to R90 to keep results compliant.
+        """
         eps_v = 350e-6
         NR_80 = rutting_life(eps_v, ReliabilityLevel.R80)
         NR_90 = rutting_life(eps_v, ReliabilityLevel.R90)
         NR_95 = rutting_life(eps_v, ReliabilityLevel.R95)
         NR_98 = rutting_life(eps_v, ReliabilityLevel.R98)
         NR_99 = rutting_life(eps_v, ReliabilityLevel.R99)
-        assert NR_80 > NR_90 > NR_95 > NR_98 > NR_99
+        # R80 must allow more repetitions than R90 (IRC Table 12.4)
+        assert NR_80 > NR_90, "80% reliability should allow more repetitions than 90%"
+        # Non-IRC levels must collapse to R90 (no fabricated shifts)
+        assert NR_95 == NR_90 == NR_98 == NR_99
 
     def test_traffic_computation(self):
         """Cumulative MSA calculation."""
@@ -116,12 +234,18 @@ class TestIRC37Criteria:
         assert isinstance(result["CDF_rutting"], float)
 
     def test_bituminous_modulus_lookup(self):
-        """Bituminous modulus table lookup."""
+        """Bituminous modulus table lookup — IRC 37:2018 Table 9.2 values."""
+        # VG30 @ 30°C = 2500 MPa (IRC 37:2018 Table 9.2 page 40)
         mod_30 = get_bituminous_modulus(BitumenGrade.VG30, 30)
-        assert abs(mod_30 - 1700) < 50
+        assert abs(mod_30 - 2500) < 50
 
+        # VG30 @ 25°C = 3000 MPa
         mod_25 = get_bituminous_modulus(BitumenGrade.VG30, 25)
-        assert abs(mod_25 - 2500) < 50
+        assert abs(mod_25 - 3000) < 50
+
+        # VG30 @ 35°C = 2000 MPa (the design temperature)
+        mod_35 = get_bituminous_modulus(BitumenGrade.VG30, 35)
+        assert abs(mod_35 - 2000) < 50
 
     def test_layer_stack_construction(self):
         """Build complete layer stack for analysis."""

@@ -121,7 +121,12 @@ class TestReserveEndpoint:
         assert body["intercept_msa"] > body["design_msa"]
 
     def test_reserve_different_reliability_levels(self):
-        """Higher reliability should reduce allowable repetitions."""
+        """Higher reliability should reduce allowable repetitions.
+
+        IRC 37:2018 only defines R80 (low-volume) and R90 (high-volume),
+        so the advanced API rejects anything else. R90 is the more
+        conservative of the two and must yield a lower intercept MSA.
+        """
         base = {
             "eps_t": 150e-6,
             "eps_v": 300e-6,
@@ -129,9 +134,21 @@ class TestReserveEndpoint:
             "design_msa": 50.0,
         }
         resp_80 = client.post("/api/v2/reserve", json={**base, "reliability": 80}).json()
-        resp_95 = client.post("/api/v2/reserve", json={**base, "reliability": 95}).json()
-        # R95 is more conservative → lower intercept
-        assert resp_80["intercept_msa"] >= resp_95["intercept_msa"]
+        resp_90 = client.post("/api/v2/reserve", json={**base, "reliability": 90}).json()
+        # R90 is more conservative → lower intercept
+        assert resp_80["intercept_msa"] >= resp_90["intercept_msa"]
+
+    def test_reserve_rejects_non_irc_reliability(self):
+        """Non-IRC reliability (R95/R98/R99) must be rejected at the API."""
+        payload = {
+            "eps_t": 150e-6,
+            "eps_v": 300e-6,
+            "mix_modulus": 1250,
+            "design_msa": 50.0,
+            "reliability": 95,
+        }
+        resp = client.post("/api/v2/reserve", json=payload)
+        assert resp.status_code == 422  # Pydantic validation error
 
     def test_reserve_custom_mix_params(self):
         """Custom air_voids and bitumen_volume should work."""
@@ -189,7 +206,9 @@ class TestMaterialsEndpoint:
         mat = body["material"]
         assert mat["code"] == "BC"
         assert mat["category"] == "bituminous"
-        assert mat["E_default"] == 1250.0
+        # BC default modulus is VG30 @ 35°C = 2000 MPa per IRC 37:2018 Table 9.2.
+        # The earlier 1250 MPa value came from a pre-2018 table.
+        assert mat["E_default"] == 2000.0
         assert mat["source"] == "base"
 
     def test_get_advanced_material_by_code(self):

@@ -1,7 +1,15 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Route, Upload, Play, Download, FileText } from 'lucide-react';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+
+// Polling safety budgets. Corridor jobs are minutes-scale, never hours; if
+// status hasn't reported "complete" within MAX_POLLS the backend has either
+// crashed or is wedged, and we should surface an error rather than hold the
+// user's UI hostage forever.
+const POLL_INTERVAL_MS = 1500;
+const MAX_POLLS = 1200;                   // 30 min hard ceiling
+const MAX_CONSECUTIVE_ERRORS = 5;         // ~7.5 s of network failures → abort
 
 const SAMPLE_CSV = `Chainage,Subgrade_CBR,CVPD,VDF,LDF
 0+000,8,800,2.5,0.75
@@ -62,24 +70,67 @@ export default function CorridorOptimizer() {
     }
   };
 
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
   const startPolling = (id) => {
-    if (pollRef.current) clearInterval(pollRef.current);
+    stopPolling();
+    let pollsRemaining = MAX_POLLS;
+    let consecutiveErrors = 0;
+
     pollRef.current = setInterval(async () => {
+      pollsRemaining -= 1;
+      if (pollsRemaining <= 0) {
+        stopPolling();
+        setLoading(false);
+        setError(
+          `Corridor optimization timed out after ${(MAX_POLLS * POLL_INTERVAL_MS) / 60000} min — ` +
+          'the backend stopped reporting progress. Refresh and try again.'
+        );
+        return;
+      }
+
       try {
         const res = await fetch(`${API_BASE}/api/v2/corridor/${id}/status`);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
         const data = await res.json();
+        consecutiveErrors = 0;       // reset on any successful response
         setStatus(data);
 
         if (data.status === 'complete') {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
+          stopPolling();
           setLoading(false);
+        } else if (data.status === 'error' || (typeof data.status === 'string' && data.status.startsWith('error'))) {
+          stopPolling();
+          setLoading(false);
+          setError(data.detail || data.status || 'Corridor optimization failed on the backend');
         }
-      } catch {
-        // keep polling
+      } catch (err) {
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          stopPolling();
+          setLoading(false);
+          setError(
+            `Lost connection to the backend after ${MAX_CONSECUTIVE_ERRORS} consecutive failed status checks ` +
+            `(${err.message || 'network error'}).`
+          );
+        }
+        // else: transient blip — keep polling but accumulate the error count
       }
-    }, 1500);
+    }, POLL_INTERVAL_MS);
   };
+
+  // Always tear the interval down on unmount so we don't keep firing
+  // requests after the panel closes.
+  useEffect(() => {
+    return () => stopPolling();
+  }, []);
 
   const downloadResults = () => {
     if (!status?.sections) return;
@@ -94,7 +145,11 @@ export default function CorridorOptimizer() {
     URL.revokeObjectURL(url);
   };
 
-  const progress = status ? Math.round((status.completed / status.total) * 100) : 0;
+  // Guard against an uninitialized or empty job (status.total = 0). Without
+  // the check this becomes Infinity / NaN and the progress bar renders garbage.
+  const progress = (status && status.total > 0)
+    ? Math.min(100, Math.round((status.completed / status.total) * 100))
+    : 0;
 
   return (
     <div className="p-4 space-y-4">

@@ -207,7 +207,9 @@ export default function StrainBulbViewer({ sharedState }) {
         load: sharedState.load,
         pressure: sharedState.pressure,
         is_dual: sharedState.wheelType === 'Dual',
-        spacing: 310,
+        // Pull spacing from sharedState so the bulb visualization matches
+        // the dual-tire geometry the user actually configured.
+        spacing: sharedState.wheelSpacing ?? 310,
       },
       r_steps: 14,
       z_steps: 30,

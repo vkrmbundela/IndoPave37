@@ -6,9 +6,10 @@ to quantify the probability of design adequacy.
 """
 
 import numpy as np
-from typing import Optional, List
+from typing import Optional, List, Dict
 from mep_opt.solver.legacy_bridge import run_bridge_from_stack
 from mep_opt.solver.irc37 import check_design_adequacy, ReliabilityLevel
+from mep_opt.advanced._strain_utils import extract_design_strains
 
 _RELIABILITY_MAP = {
     80: ReliabilityLevel.R80, 90: ReliabilityLevel.R90,
@@ -26,6 +27,7 @@ def run_monte_carlo(
     sigmas: Optional[List[float]] = None,
     n_simulations: int = 100,
     reliability: int = 80,
+    point_roles: Optional[Dict[str, List[int]]] = None,
 ) -> dict:
     """
     Run Monte Carlo simulation with Gaussian noise on layer thicknesses.
@@ -38,6 +40,10 @@ def run_monte_carlo(
         mix_modulus: bituminous modulus for fatigue
         sigmas: std deviation (mm) per layer (default 5mm for non-subgrade)
         n_simulations: number of runs (default 100)
+        point_roles: optional mapping of role name → result indices, e.g.
+            ``{"bit_bottom": [0, 1], "sub_top": [2, 3]}``. When omitted,
+            the dashboard convention is assumed (first two points at the
+            bituminous bottom, next two at subgrade top).
 
     Returns:
         Statistics and distribution data for visualization.
@@ -74,8 +80,10 @@ def run_monte_carlo(
 
         try:
             res = run_bridge_from_stack(perturbed, load_data, eval_points)
-            eps_t = max(abs(r["eps_t"]) for r in res)
-            eps_v = max(abs(r["eps_z"]) for r in res)
+            # Role-aware extraction: each iteration is independent so a
+            # short or oddly ordered result list cannot corrupt the
+            # statistics by selecting the wrong row.
+            eps_t, eps_v = extract_design_strains(res, point_roles)
 
             adequacy = check_design_adequacy(
                 eps_t, eps_v, cumulative_msa, mix_modulus, rel,

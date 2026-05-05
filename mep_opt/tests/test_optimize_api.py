@@ -10,7 +10,9 @@ class DummyInfeasibleSearch:
     def __init__(self, problem):
         self.problem = problem
 
-    def run(self):
+    def run(self, *args, **kwargs):
+        # Accept timeout/deadline kwargs the real optimizer now exposes,
+        # so the stub stays drop-in across signature evolution.
         perf = {
             "overall_adequate": False,
             "CDF_fatigue": 12345.0,
@@ -41,6 +43,7 @@ class DummyInfeasibleSearch:
             is_feasible=False,
             performance=perf,
             pareto_front=[prelim],
+            warnings=["stub warning"],
         )
 
 
@@ -86,3 +89,4 @@ def test_optimize_endpoint_hides_infeasible_fallback_designs(monkeypatch):
     assert body["status"] == "success"
     assert body["is_adequate"] is False
     assert body["adequate_designs"] == []
+    assert body["warnings"] == ["stub warning"]

@@ -19,6 +19,13 @@ def compute_strain_field(
     """
     Compute a 2D strain field on an r-z grid.
 
+    Args:
+        layers: pavement stack (last entry is subgrade)
+        load_data: must include ``load``, ``pressure``, ``is_dual``;
+            ``spacing`` is required when ``is_dual`` is True (no silent
+            fallback — a wrong dual-tire centre-to-centre distance produces
+            a believable-looking bulb that's structurally wrong).
+
     Returns:
         {r_values, z_values, layer_interfaces, eps_z_grid, eps_t_grid, disp_z_grid}
         Grids are [z_index][r_index] arrays.
@@ -36,12 +43,37 @@ def compute_strain_field(
     r_values = np.linspace(0, r_max, r_steps).tolist()
     z_values = np.linspace(1.0, total_depth, z_steps).tolist()
 
-    # Build load config dict for bridge
+    # Build load config dict for bridge — validate dual-tire geometry up
+    # front so the visualization can never silently use a wrong spacing.
+    is_dual = bool(load_data.get("is_dual", False))
+    spacing_raw = load_data.get("spacing")
+    if is_dual:
+        if spacing_raw is None:
+            raise ValueError(
+                "Dual-tire load (is_dual=True) requires an explicit 'spacing' "
+                "(centre-to-centre, mm). The strain field cannot guess at the "
+                "wheel geometry."
+            )
+        try:
+            spacing = float(spacing_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"spacing must be numeric, got {spacing_raw!r}") from exc
+        if not (50.0 <= spacing <= 2000.0):
+            raise ValueError(
+                f"Dual-tire spacing {spacing} mm is outside the engineering "
+                f"plausible 50–2000 mm range"
+            )
+    else:
+        # Single-tire load: spacing has no physical meaning, but the bridge
+        # interface still expects a number — supply 0 so we never propagate
+        # a stale value from another configuration.
+        spacing = 0.0
+
     load_cfg = {
         "load": load_data["load"],
         "pressure": load_data["pressure"],
-        "is_dual": load_data.get("is_dual", False),
-        "spacing": load_data.get("spacing", 310.0),
+        "is_dual": is_dual,
+        "spacing": spacing,
     }
 
     # Compute strains at every grid point (one bridge call per z-row)

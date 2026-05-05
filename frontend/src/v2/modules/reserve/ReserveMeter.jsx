@@ -48,11 +48,37 @@ export default function ReserveMeter({ sharedState }) {
   useEffect(() => {
     if (!hasResults) return;
 
-    // Extract critical strains from results
-    const allEpsZ = sharedState.results.map(r => Math.abs(r.eps_z || r.strain_z || 0));
-    const allEpsT = sharedState.results.map(r => Math.abs(r.eps_t || r.strain_t || 0));
-    const maxEpsV = Math.max(...allEpsZ);
-    const maxEpsT = Math.max(...allEpsT);
+    // Role-aware extraction (Issues.md #7). The dashboard convention is:
+    //   results[0..1] = bottom of bituminous   → drives FATIGUE (eps_t / eps_r)
+    //   results[2..3] = top of subgrade         → drives RUTTING (eps_z)
+    // Naïve `Math.max` over every row conflates the two: a large eps_t at a
+    // subgrade row would silently win the fatigue check, producing a wrong
+    // reserve number. Same fix backend uses in extract_design_strains().
+    const rows = sharedState.results;
+    const nRows = rows.length;
+    let bitRows;
+    let subRows;
+    if (nRows >= 4) {
+      bitRows = rows.slice(0, 2);
+      subRows = rows.slice(2, 4);
+    } else if (nRows >= 2) {
+      const mid = Math.max(1, Math.floor(nRows / 2));
+      bitRows = rows.slice(0, mid);
+      subRows = rows.slice(mid);
+    } else {
+      // Single point — degrade to rutting-only, no fatigue measurement
+      bitRows = [];
+      subRows = rows;
+    }
+
+    const absT = (r) => Math.max(
+      Math.abs(r.eps_t || r.strain_t || 0),
+      Math.abs(r.eps_r || 0),
+    );
+    const absV = (r) => Math.abs(r.eps_z || r.strain_z || 0);
+
+    const maxEpsT = bitRows.length ? Math.max(...bitRows.map(absT)) : 0;
+    const maxEpsV = subRows.length ? Math.max(...subRows.map(absV)) : 0;
 
     if (maxEpsV < 1e-15 && maxEpsT < 1e-15) return;
 
@@ -60,13 +86,21 @@ export default function ReserveMeter({ sharedState }) {
     const bitLayer = sharedState.layers?.[0];
     const mixModulus = bitLayer?.E || 1250;
 
-    // Compute design MSA from CVPD (simplified: use defaults for growth, VDF, LDF)
+    // Compute design MSA from the SAME assumptions the optimizer used.
+    // Pull every parameter from sharedState — never hardcode here, otherwise
+    // the reserve gauge silently disagrees with the design it's meant to evaluate.
     const cvpd = sharedState.cvpd || 800;
-    const growthRate = 0.05;
-    const designLife = 20;
-    const ldf = 0.75;
-    const vdf = 2.5;
-    const N = 365 * cvpd * ldf * vdf * ((Math.pow(1 + growthRate, designLife) - 1) / growthRate);
+    const growthRate = sharedState.growthRate ?? 0.05;
+    const designLife = sharedState.designLife ?? 20;
+    const ldf = sharedState.ldf ?? 0.75;
+    const vdf = sharedState.vdf ?? 2.5;
+    const reliability = sharedState.reliabilityPercent ?? 80;
+
+    // Standard IRC 37 cumulative-MSA formula. Branch on near-zero growth rate
+    // to avoid the (1 - 1)/0 indeterminate that otherwise produces NaN.
+    const N = Math.abs(growthRate) < 1e-10
+      ? 365 * cvpd * ldf * vdf * designLife
+      : 365 * cvpd * ldf * vdf * (Math.pow(1 + growthRate, designLife) - 1) / growthRate;
     const designMsa = N / 1e6;
 
     post('/reserve', {
@@ -74,11 +108,22 @@ export default function ReserveMeter({ sharedState }) {
       eps_v: maxEpsV,
       mix_modulus: mixModulus,
       design_msa: designMsa,
-      reliability: 80,
+      reliability,
     }).then(res => {
       if (res && res.status === 'ok') setResult(res);
     });
-  }, [hasResults, sharedState.results, sharedState.layers, sharedState.cvpd, post]);
+  }, [
+    hasResults,
+    sharedState.results,
+    sharedState.layers,
+    sharedState.cvpd,
+    sharedState.growthRate,
+    sharedState.designLife,
+    sharedState.ldf,
+    sharedState.vdf,
+    sharedState.reliabilityPercent,
+    post,
+  ]);
 
   if (!hasResults) {
     return (

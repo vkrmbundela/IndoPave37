@@ -1,11 +1,12 @@
 import pytest
 from mep_opt.solver.irc37 import AxleLoadGroup, ctb_fatigue_life, check_ctb_adequacy
 
-def test_ctb_infinite_life():
-    # If stress is low enough so SR < 0.45, it should have infinite life
-    # MR = 1.4, so 0.45 * 1.4 = 0.63. So sigma_t = 0.5 < 0.63
+def test_ctb_low_stress_is_finite_not_capped():
+    # The low-SR branch is no longer fabricated as infinite life.
+    # Stress remains finite and should still produce a large but bounded life.
     life = ctb_fatigue_life(0.5, 1.4)
-    assert life == float('inf')
+    assert life != float('inf')
+    assert life > 1e6
 
 def test_ctb_finite_life():
     # SR = 1.0 (sigma_t = 1.4). N = 10^((0.972 - 1.0)/0.0825) = 10^(-0.339..) = 0.45

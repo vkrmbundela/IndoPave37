@@ -7,93 +7,79 @@ Serves the web UI and provides analysis/optimization API endpoints.
 import asyncio
 import logging
 import os
-from fastapi import FastAPI, Request, HTTPException
+import math
+import time
+from typing import List, Dict, Any, Optional, Union
+
+import numpy as np
+from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, field_validator
-from typing import List, Optional, Dict, Any
-import numpy as np
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from mep_opt.solver.legacy_bridge import run_bridge_from_stack, is_bridge_available
-from mep_opt.optimizer.smart_search import SmartPavementSearch
-from mep_opt.optimizer.problem import OptimizationProblem
+# Project Imports
+from mep_opt.solver.legacy_bridge import is_bridge_available, run_bridge_from_stack
 from mep_opt.solver.irc37 import TrafficInput, SubgradeInput, ReliabilityLevel
+from mep_opt.optimizer.problem import OptimizationProblem
+from mep_opt.optimizer.smart_search import SmartPavementSearch
 from mep_opt.web.knowledge_qa import IrcKnowledgeService, ChunkFilters
+from mep_opt.solver.irc37 import AxleLoadGroup
 
-# Configure Logging
+# Initialize Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Flex Pave")
+# Initialize FastAPI App
+app = FastAPI(title="FlexPave API", version="3.4.2")
 
-# Add CORS middleware to support Vite React frontend
-_raw_cors_origins = os.getenv(
-    "MEP_OPT_CORS_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173",
-)
-_raw_extra_cors_origins = os.getenv("MEP_OPT_EXTRA_CORS_ORIGINS", "")
-
-# Regex allows local dev origins on any port (e.g., Vite on 5173/5174/4173).
-# Override via env if needed.
-_cors_origin_regex = os.getenv(
-    "MEP_OPT_CORS_ORIGIN_REGEX",
-    r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-).strip() or None
-
-# Normalize configured origins (trim trailing slash to avoid exact-match misses).
-_cors_origin_candidates = [
-    *[o.strip() for o in _raw_cors_origins.split(",") if o.strip()],
-    *[o.strip() for o in _raw_extra_cors_origins.split(",") if o.strip()],
-]
-_cors_origins = []
-for _origin in _cors_origin_candidates:
-    normalized = _origin.rstrip("/")
-    if normalized not in _cors_origins:
-        _cors_origins.append(normalized)
-if not _cors_origins:
-    _cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
-
-_allow_all_origins = "*" in _cors_origins
-if _allow_all_origins:
-    _cors_origins = ["*"]
-    # Regex is irrelevant when wildcard origins are enabled.
-    _cors_origin_regex = None
-
-logger.info(
-    "CORS config: origins=%s origin_regex=%s",
-    _cors_origins,
-    _cors_origin_regex,
-)
-
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_origin_regex=_cors_origin_regex,
-    allow_credentials=not _allow_all_origins,
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Advanced Engineering Modules (v2) — all routes under /api/v2/
-from mep_opt.advanced.router import advanced_router
-app.include_router(advanced_router)
-
-# Mount Static Files
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-if not os.path.exists(static_dir):
-    os.makedirs(static_dir)
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-# Templates
-templates_dir = os.path.join(os.path.dirname(__file__), "templates")
-if not os.path.exists(templates_dir):
-    os.makedirs(templates_dir)
-templates = Jinja2Templates(directory=templates_dir)
+try:
+    from mep_opt.advanced.router import advanced_router
+    app.include_router(advanced_router)
+except ImportError:
+    logger.warning("Advanced router could not be imported. Some V2 endpoints will be missing.")
 
 # Local IRC corpus retrieval service (lazy-loaded on first request)
 knowledge_service = IrcKnowledgeService()
+
+
+@app.get("/", response_class=HTMLResponse)
+async def read_root():
+    """Welcome page with redirection to the official GitHub Pages frontend."""
+    return """
+    <html>
+        <head>
+            <title>FlexPave API</title>
+            <style>
+                body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: #0f172a; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+                .card { background: #1e293b; padding: 2.5rem; border-radius: 1.5rem; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); text-align: center; max-width: 450px; border: 1px solid #334155; }
+                h1 { color: #38bdf8; margin-bottom: 1rem; font-size: 2rem; }
+                p { color: #94a3b8; line-height: 1.6; margin-bottom: 2rem; }
+                .btn { background: #0284c7; color: white; text-decoration: none; padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: 600; transition: all 0.2s; display: inline-block; }
+                .btn:hover { background: #0ea5e9; transform: translateY(-2px); }
+                .status { margin-top: 1.5rem; font-size: 0.8rem; color: #475569; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>FlexPave Backend</h1>
+                <p>The API server is <strong>Online</strong>. To access the interactive engineering dashboard, please visit the official deployment on GitHub Pages.</p>
+                <a href="https://vkrmbundela.github.io/flex-pave/" class="btn">Go to Dashboard</a>
+                <div class="status">v3.4.2 Production API</div>
+            </div>
+        </body>
+    </html>
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -204,18 +190,77 @@ class LayerConstraint(BaseModel):
             raise ValueError("Poisson ratio nu must be in [0, 0.5)")
         return v
 
-    @field_validator("min_thickness")
+    @field_validator("min_thickness", "max_thickness")
     @classmethod
-    def min_positive(cls, v):
+    def thickness_non_negative(cls, v):
         if v < 0:
-            raise ValueError("min_thickness must be >= 0")
+            raise ValueError("Thickness must be non-negative (>= 0)")
         return v
 
-    @field_validator("max_thickness")
+    @field_validator("fixed_thickness")
     @classmethod
-    def max_positive(cls, v):
+    def fixed_thickness_non_negative(cls, v):
+        if v < 0:
+            raise ValueError("fixed_thickness must be non-negative (>= 0)")
+        return v
+
+    @model_validator(mode='after')
+    def check_thickness_bounds(self) -> 'LayerConstraint':
+        if not self.is_fixed:
+            if self.min_thickness > self.max_thickness:
+                raise ValueError(
+                    f"min_thickness ({self.min_thickness}) cannot be greater than "
+                    f"max_thickness ({self.max_thickness})"
+                )
+        return self
+
+
+class MaterialRateOverride(BaseModel):
+    """Optional per-field override of a single material's unit rate."""
+    cost_per_cum: Optional[float] = None       # ₹/m³
+    co2_per_cum: Optional[float] = None        # kg CO₂/m³
+    density: Optional[float] = None            # kg/m³
+    transport_co2_factor: Optional[float] = None  # kg CO₂ / (tonne · km)
+
+    @field_validator("cost_per_cum")
+    @classmethod
+    def cost_positive(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("cost_per_cum must be non-negative")
+        return v
+
+    @field_validator("co2_per_cum")
+    @classmethod
+    def co2_non_negative(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("co2_per_cum must be non-negative")
+        return v
+
+    @field_validator("density")
+    @classmethod
+    def density_positive(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("density must be positive")
+        return v
+
+
+class AxleLoadGroupInput(BaseModel):
+    axle_type: str
+    load_kn: float
+    expected_repetitions: float
+
+    @field_validator("load_kn")
+    @classmethod
+    def load_kn_positive(cls, v):
         if v <= 0:
-            raise ValueError("max_thickness must be positive")
+            raise ValueError("load_kn must be positive")
+        return v
+
+    @field_validator("expected_repetitions")
+    @classmethod
+    def repetitions_non_negative(cls, v):
+        if v < 0:
+            raise ValueError("expected_repetitions must be non-negative")
         return v
 
 
@@ -225,10 +270,42 @@ class OptimizeRequest(BaseModel):
     design_life: int
     vdf: float = 2.5
     lane_factor: float = 0.75
+    ctb_axle_spectrum: Optional[List[AxleLoadGroupInput]] = None
+    ctb_per_class_bridge_recompute: bool = False
     subgrade_cbr: float
     reliability: str = "90%"
     temperature: float = 35.0       # Pavement temperature (deg C)
     layers: List[LayerConstraint]
+
+    # Optional per-layer-type unit-rate override for cost-aware optimization.
+    # Each entry may be a number (₹/m³ cost-only override) or an object with
+    # any subset of {cost_per_cum, co2_per_cum, density, transport_co2_factor}.
+    # Layer types not specified use the IRC/MORTH SoR defaults.
+    material_rates: Optional[Dict[str, Union[float, MaterialRateOverride]]] = None
+    # Optional load & wheel config to ensure Optimize matches Evaluate
+    wheel_load: float = 20000.0
+    tire_pressure: float = 0.56
+    wheel_type: str = "Single"
+    wheel_spacing: float = 310.0
+    # Optional analysis points for the optimizer (list of {z, r})
+    points: Optional[List[AnalysisPointInput]] = None
+    # Debug toggle: when true, return evaluation errors in the response (if any)
+    debug: bool = False
+
+    @field_validator("material_rates")
+    @classmethod
+    def normalize_material_rates(cls, v):
+        if v is None:
+            return v
+        # Convert MaterialRateOverride models to plain dicts so the optimizer's
+        # resolver can merge them with defaults uniformly.
+        normalized: Dict[str, Any] = {}
+        for k, val in v.items():
+            if isinstance(val, MaterialRateOverride):
+                normalized[k] = val.model_dump(exclude_none=True)
+            else:
+                normalized[k] = val
+        return normalized
 
     @field_validator("cvpd")
     @classmethod
@@ -266,6 +343,70 @@ class OptimizeRequest(BaseModel):
             raise ValueError(f"reliability must be one of {valid}")
         return v
 
+    @field_validator("wheel_load")
+    @classmethod
+    def wheel_load_range(cls, v):
+        # Indian highway wheel loads typically span ~5–80 kN per wheel for
+        # 8–18 t commercial axles. Allow a generous 1–200 kN window so the
+        # validator catches pathological values (e.g., 1e9 N) without
+        # second-guessing legitimate research scenarios.
+        if not (1_000.0 <= v <= 200_000.0):
+            raise ValueError(
+                "wheel_load (N per wheel) must be between 1,000 and 200,000"
+            )
+        return v
+
+    @field_validator("tire_pressure")
+    @classmethod
+    def tire_pressure_range(cls, v):
+        # Realistic tire contact pressures: 0.4–1.2 MPa. Accept 0.1–2.0
+        # to remain permissive for non-standard cases.
+        if not (0.1 <= v <= 2.0):
+            raise ValueError(
+                "tire_pressure (MPa) must be between 0.1 and 2.0"
+            )
+        return v
+
+    @field_validator("wheel_type")
+    @classmethod
+    def optimize_wheel_type(cls, v):
+        if v is None or v.lower() not in ("single", "dual"):
+            raise ValueError("wheel_type must be 'Single' or 'Dual'")
+        return v
+
+    @field_validator("wheel_spacing")
+    @classmethod
+    def wheel_spacing_range(cls, v):
+        if not (50.0 <= v <= 2_000.0):
+            raise ValueError(
+                "wheel_spacing (mm) must be between 50 and 2000"
+            )
+        return v
+
+    @field_validator("layers")
+    @classmethod
+    def validate_layer_stack(cls, v):
+        if not v:
+            raise ValueError("At least one layer is required")
+        if len(v) > 20:
+            raise ValueError("Maximum 20 layers supported (got %d)" % len(v))
+        types = [str(l.layer_type).strip() for l in v]
+        # Duplicates make layer_props / thickness_bounds dicts ambiguous.
+        seen = set()
+        dups = []
+        for t in types:
+            key = t.upper()
+            if key in seen:
+                dups.append(t)
+            else:
+                seen.add(key)
+        if dups:
+            raise ValueError(
+                f"Duplicate layer_type entries are not allowed: {sorted(set(dups))}"
+            )
+        return v
+
+
 class AdequateDesignSchema(BaseModel):
     optimal_layers: List[dict]
     total_thickness: float
@@ -277,12 +418,12 @@ class OptimizeResponse(BaseModel):
     status: str
     adequate_designs: List[AdequateDesignSchema]
     is_adequate: bool
+    errors: Optional[List[str]] = None
+    warnings: List[str] = Field(default_factory=list)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-import math
 
 def _to_native(value: Any) -> Any:
     """Convert NumPy types to Python native types for JSON serialization.
@@ -306,11 +447,6 @@ def _to_native(value: Any) -> Any:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-
-@app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
 
 @app.post("/api/solve", response_model=SolveResponse)
 async def solve_pavement(data: SolveRequest):
@@ -336,14 +472,9 @@ async def solve_pavement(data: SolveRequest):
                 status_code=503,
                 detail="Legacy bridge solver is not available. Ensure the reference executable is present.",
             )
+        
         logger.info("Using legacy bridge solver")
         raw_results = run_bridge_from_stack(solver_stack, load_cfg, eval_points)
-
-        # Adapt dict to object-like structure for the formatting loop
-        class ResObj:
-            def __init__(self, **entries):
-                self.__dict__.update(entries)
-        results = [ResObj(**r) for r in raw_results]
 
         # 6. Format Output
         output_results = []
@@ -351,29 +482,33 @@ async def solve_pavement(data: SolveRequest):
         max_eps_t = 0.0
         max_eps_c = 0.0
 
-        for i, r in enumerate(results):
+        for i, r in enumerate(raw_results):
             res_dict = {
                 "id": i,
                 "z": data.points[i].z,
                 "r": data.points[i].r,
-                "sigma_z": getattr(r, "sigma_z", 0.0),
-                "sigma_r": getattr(r, "sigma_r", 0.0),
-                "sigma_t": getattr(r, "sigma_t", 0.0),
-                "tau_rz": getattr(r, "tau_rz", 0.0),
-                "disp_z": getattr(r, "disp_z", 0.0),
-                "disp_r": getattr(r, "disp_r", 0.0),
-                "eps_z": getattr(r, "eps_z", 0.0),
-                "eps_r": getattr(r, "eps_r", 0.0),
-                "eps_t": getattr(r, "eps_t", 0.0),
+                "sigma_z": r.get("sigma_z", 0.0),
+                "sigma_r": r.get("sigma_r", 0.0),
+                "sigma_t": r.get("sigma_t", 0.0),
+                "tau_rz": r.get("tau_rz", 0.0),
+                "disp_z": r.get("disp_z", 0.0),
+                "disp_r": r.get("disp_r", 0.0),
+                "eps_z": r.get("eps_z", 0.0),
+                "eps_r": r.get("eps_r", 0.0),
+                "eps_t": r.get("eps_t", 0.0),
             }
             output_results.append(res_dict)
 
-            if abs(r.disp_z) > max_disp:
-                max_disp = abs(r.disp_z)
-            if abs(r.eps_t) > max_eps_t:
-                max_eps_t = abs(r.eps_t)
-            if abs(r.eps_z) > abs(max_eps_c):
-                max_eps_c = r.eps_z
+            disp_z = r.get("disp_z", 0.0)
+            eps_t = r.get("eps_t", 0.0)
+            eps_z = r.get("eps_z", 0.0)
+
+            if abs(disp_z) > max_disp:
+                max_disp = abs(disp_z)
+            if abs(eps_t) > max_eps_t:
+                max_eps_t = abs(eps_t)
+            if abs(eps_z) > abs(max_eps_c):
+                max_eps_c = eps_z
 
         return SolveResponse(
             status="success",
@@ -419,7 +554,7 @@ async def run_optimization(data: OptimizeRequest):
         reliability = rel_map.get(data.reliability, ReliabilityLevel.R90)
 
         # 2. Setup Problem
-        l_types = [l.layer_type for l in data.layers]
+        l_types = [l.layer_type for l in data.layers if l.layer_type.lower() != "subgrade"]
         bounds = {}
         layer_props = {}
         for l in data.layers:
@@ -429,6 +564,15 @@ async def run_optimization(data: OptimizeRequest):
             else:
                 bounds[l.layer_type] = (l.min_thickness, l.max_thickness)
 
+        # If caller provided explicit Subgrade E in layer_props AND also provided a
+        # CBR value, prefer the CBR-derived modulus and drop the explicit E to
+        # avoid conflicting intent (CBR is a higher-level geotechnical input).
+        sub_custom = layer_props.get('Subgrade')
+        if sub_custom and sub_custom.get('E') is not None:
+            logger.warning("Optimize request provided Subgrade E while CBR is also set; preferring CBR-derived modulus and ignoring explicit Subgrade.E")
+            # Remove only the explicit E override; keep any other subgrade props
+            layer_props['Subgrade'] = {k: v for k, v in sub_custom.items() if k != 'E'}
+
         problem = OptimizationProblem(
             traffic=traffic,
             subgrade=subgrade,
@@ -437,19 +581,51 @@ async def run_optimization(data: OptimizeRequest):
             layer_types=l_types,
             layer_props=layer_props,
             thickness_bounds=bounds,
+            material_rates=data.material_rates,
+            wheel_load=data.wheel_load,
+            tire_pressure=data.tire_pressure,
+            wheel_type=data.wheel_type,
+            wheel_spacing=data.wheel_spacing,
+            ctb_axle_spectrum=[
+                AxleLoadGroup(
+                    axle_type=item.axle_type,
+                    load_kn=item.load_kn,
+                    expected_repetitions=item.expected_repetitions,
+                ) for item in (data.ctb_axle_spectrum or [])
+            ] or None,
+            ctb_per_class_bridge_recompute=data.ctb_per_class_bridge_recompute,
+            eval_points=[{"z": p.z, "r": p.r} for p in (data.points or [])] if data.points else None,
         )
 
 
-        # 3. Run smart search in a thread with timeout
+        # 3. Run smart search in a thread with TWO layered timeouts:
+        #    a) Optimizer-level deadline — the optimizer itself checks
+        #       wall-clock between bridge calls and returns whatever
+        #       adequate designs it has so far (graceful degradation).
+        #    b) asyncio.wait_for hard ceiling — covers the case where the
+        #       optimizer is stuck in a single bridge call. The bridge
+        #       subprocess timeout (DEFAULT_BRIDGE_TIMEOUT_S = 30s)
+        #       prevents that path from ever blocking forever.
+        OPTIMIZER_BUDGET_S = 300.0   # 5-min wall-clock for the search
+        HTTP_GRACE_S = 30.0          # extra grace for cleanup / final cost calc
+
         optimizer = SmartPavementSearch(problem)
+        deadline = time.monotonic() + OPTIMIZER_BUDGET_S
 
         try:
             result = await asyncio.wait_for(
-                asyncio.to_thread(optimizer.run),
-                timeout=300.0,  # 5-minute safety cap
+                asyncio.to_thread(optimizer.run, deadline=deadline),
+                timeout=OPTIMIZER_BUDGET_S + HTTP_GRACE_S,
             )
         except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Optimization timed out after 5 minutes")
+            # The optimizer's cooperative deadline should normally trigger
+            # before this hard ceiling fires. Reaching this branch usually
+            # means a single bridge call hung past its 30s subprocess
+            # timeout — a real environment problem worth surfacing.
+            raise HTTPException(
+                status_code=504,
+                detail=f"Optimization timed out after {OPTIMIZER_BUDGET_S + HTTP_GRACE_S:.0f}s",
+            )
 
         # 4. Format Output: Return all adequate designs sorted by total thickness
         adequate_designs_response = []
@@ -473,10 +649,19 @@ async def run_optimization(data: OptimizeRequest):
                     "details": _to_native(perf)
                 })
 
+        # Error list must be List[str] for the response schema; coerce any
+        # non-string entries that may have been collected during evaluation.
+        errors_out = None
+        if data.debug:
+            raw_errors = getattr(result, 'errors', None) or []
+            errors_out = [str(e) for e in raw_errors]
+
         return OptimizeResponse(
             status="success",
             adequate_designs=adequate_designs_response,
-            is_adequate=bool(result.is_feasible)
+            is_adequate=bool(result.is_feasible),
+            errors=errors_out,
+            warnings=list(getattr(result, 'warnings', None) or []),
         )
 
     except HTTPException:
@@ -499,6 +684,32 @@ class PdfReportRequest(BaseModel):
     selected_solution: dict
     adequate_designs: List[dict] = []
 
+
+@app.post("/api/report/pdf")
+async def generate_pdf_report(data: PdfReportRequest):
+    try:
+        from mep_opt.web.pdf_report import generate_report
+
+        pdf_bytes = generate_report(
+            project_name=data.project_name,
+            traffic_params=_to_native(data.traffic_params),
+            subgrade_cbr=data.subgrade_cbr,
+            selected_solution=_to_native(data.selected_solution),
+            adequate_designs=_to_native(data.adequate_designs),
+        )
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=MEP_Report.pdf"}
+        )
+    except Exception as e:
+        logger.error(f"PDF Generation Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# IRC Knowledge Endpoints
+# ---------------------------------------------------------------------------
 
 class KnowledgeFiltersInput(BaseModel):
     page_min: Optional[int] = None
@@ -572,33 +783,6 @@ def _to_chunk_filters(filters: Optional[KnowledgeFiltersInput]) -> Optional[Chun
         has_equation=filters.has_equation,
     )
 
-
-@app.post("/api/report/pdf")
-async def generate_pdf_report(data: PdfReportRequest):
-    from fastapi.responses import Response
-    try:
-        from mep_opt.web.pdf_report import generate_report
-
-        pdf_bytes = generate_report(
-            project_name=data.project_name,
-            traffic_params=_to_native(data.traffic_params),
-            subgrade_cbr=data.subgrade_cbr,
-            selected_solution=_to_native(data.selected_solution),
-            adequate_designs=_to_native(data.adequate_designs),
-        )
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=MEP_Report.pdf"}
-        )
-    except Exception as e:
-        logger.error(f"PDF Generation Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------------------
-# IRC Knowledge Endpoints
-# ---------------------------------------------------------------------------
 
 @app.post("/api/knowledge/search", response_model=KnowledgeSearchResponse)
 async def search_irc_knowledge(data: KnowledgeSearchRequest):
