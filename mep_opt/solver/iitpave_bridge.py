@@ -570,87 +570,121 @@ def _write_in_file(solver_stack: List[Dict], load_cfg: Dict, eval_points: List[D
 
 
 def _parse_out_file(lines: List[str], expected_evals: List[Dict]) -> List[Dict]:
-    """Parse the tabular output from the legacy OUT file."""
-    results = []
-    parse_errors = []
-    
-    # Example format:
-    #     Z        R      SigmaZ      SigmaT     SigmaR     TaoRZ      DispZ      epZ        epT        epR
-    #    55.00    0.00-0.4108E+00 0.6959E+00 0.6087E+00-0.1910E-01 0.4357E+00-0.2478E-03 0.1790E-03 0.1454E-03
-    
+    """
+    Parse the tabular output from the legacy OUT file.
+
+    IIT Pave outputs TWO rows per evaluation point when the point falls
+    on a layer interface:
+      - Non-L row: stresses/strains from the UPPER layer's properties
+      - L-row (Z value suffixed with 'L'): from the LOWER layer's properties
+
+    At a bonded interface sigma_z, tau_rz, disp_z, eps_t, eps_r are
+    continuous (identical in both rows); sigma_t, sigma_r, eps_z differ.
+
+    This parser reads all data rows, groups non-L / L pairs, and returns
+    one result per eval point using the non-L (upper-layer) values as
+    primary, with eps_z_lower from the L-row attached for callers that
+    need the lower-layer vertical strain (e.g. rutting at subgrade top).
+    """
+    import re
+
+    float_re = r"[+-]?(?:\d*\.\d+|\d+)(?:[EeDd][+-]?\d+)?"
+
+    def parse_legacy_float(token: str) -> float:
+        return float(token.replace('D', 'E').replace('d', 'E'))
+
+    # Locate the header row
     data_start_idx = -1
     for i, line in enumerate(lines):
         if "epZ" in line and "epT" in line and "Z" in line and "R" in line:
             data_start_idx = i + 1
             break
-            
+
     if data_start_idx == -1:
         raise ValueError("Could not find data table header in legacy output")
 
-    # The next len(expected_evals) lines should be the tabular data
-    for i in range(len(expected_evals)):
-        line_idx = data_start_idx + i
-        if line_idx >= len(lines):
-            break
-            
+    # Read ALL data rows after the header (non-L and L rows)
+    all_rows = []
+    for line_idx in range(data_start_idx, len(lines)):
         text = lines[line_idx].strip()
         if not text:
             continue
-
-        # Robust float extraction: handle formats like 0.00, -0.4108E+00, -0.123D-02
-        # and cases where numbers run together without spaces. Use a regex to
-        # extract numeric tokens (supports E/e/D/d exponents and optional sign).
-        # Examples matched: -1.234E-05, 0.123, 123, -0.12D+03
-        float_re = r"[+-]?(?:\d*\.\d+|\d+)(?:[EeDd][+-]?\d+)?"
-        import re
-
         nums = re.findall(float_re, text)
+        if len(nums) < 6:
+            break
 
-        # Some legacy rows include a trailing 'L' on the first token (index/id).
-        # If present, strip an 'L' from the first numeric-like token.
-        if nums and nums[0].endswith('L'):
-            nums[0] = nums[0][:-1]
+        first_token = text.split()[0] if text.split() else ""
+        is_lower = "L" in first_token and any(c.isdigit() for c in first_token)
 
-        def parse_legacy_float(token: str) -> float:
-            return float(token.replace('D', 'E').replace('d', 'E'))
+        all_rows.append({"nums": nums, "is_lower": is_lower, "line_idx": line_idx})
 
-        if len(nums) >= 6:
-            try:
-                # Heuristic mapping: legacy table typically has many columns; we
-                # conservatively map from the end to find epZ/epT and surface values.
-                # Use -3 and -2 like before when available, otherwise best-effort.
-                epz_str = nums[-3] if len(nums) >= 3 else nums[-2]
-                ept_str = nums[-2] if len(nums) >= 2 else nums[-1]
-
-                epz = parse_legacy_float(epz_str)
-                ept = parse_legacy_float(ept_str)
-
-                pt = expected_evals[i]
-
-                def safe_get(idx_from_end, default=0.0):
-                    if len(nums) >= abs(idx_from_end):
-                        try:
-                            return parse_legacy_float(nums[idx_from_end])
-                        except Exception:
-                            return default
-                    return default
-
-                results.append({
-                    "z": pt['z'],
-                    "r": pt['r'],
-                    "sigma_z": safe_get(-8, 0.0),
-                    "sigma_r": safe_get(-6, 0.0),
-                    "sigma_t": safe_get(-7, 0.0),
-                    "tau_rz": safe_get(-5, 0.0),
-                    "disp_z": safe_get(-4, 0.0),
-                    "eps_z": epz,
-                    "eps_t": ept,
-                    "eps_r": safe_get(-1, 0.0)
-                })
-            except Exception as e:
-                parse_errors.append(f"line {line_idx + 1}: {e}")
+    # Group into (non-L, optional L) pairs per evaluation point
+    grouped = []
+    i = 0
+    while i < len(all_rows):
+        upper = all_rows[i]
+        lower = None
+        if upper["is_lower"]:
+            logger.warning("Expected non-L row at line %d but found L-row", upper["line_idx"] + 1)
+            i += 1
+            continue
+        if i + 1 < len(all_rows) and all_rows[i + 1]["is_lower"]:
+            lower = all_rows[i + 1]
+            i += 2
         else:
-            parse_errors.append(f"line {line_idx + 1}: insufficient numeric columns ({len(nums)})")
+            i += 1
+        grouped.append((upper, lower))
+
+    if len(grouped) < len(expected_evals):
+        raise ValueError(
+            f"Parsed {len(grouped)} eval-point groups from OUT file "
+            f"but expected {len(expected_evals)}"
+        )
+
+    results = []
+    parse_errors = []
+
+    for pt_idx, pt in enumerate(expected_evals):
+        upper_row, lower_row = grouped[pt_idx]
+        nums = upper_row["nums"]
+
+        def safe_get(idx_from_end, default=0.0):
+            if len(nums) >= abs(idx_from_end):
+                try:
+                    return parse_legacy_float(nums[idx_from_end])
+                except Exception:
+                    return default
+            return default
+
+        try:
+            epz = parse_legacy_float(nums[-3])
+            ept = parse_legacy_float(nums[-2])
+
+            result = {
+                "z": pt["z"],
+                "r": pt["r"],
+                "sigma_z": safe_get(-8, 0.0),
+                "sigma_r": safe_get(-6, 0.0),
+                "sigma_t": safe_get(-7, 0.0),
+                "tau_rz": safe_get(-5, 0.0),
+                "disp_z": safe_get(-4, 0.0),
+                "eps_z": epz,
+                "eps_t": ept,
+                "eps_r": safe_get(-1, 0.0),
+            }
+
+            if lower_row is not None:
+                l_nums = lower_row["nums"]
+                try:
+                    result["eps_z_lower"] = parse_legacy_float(l_nums[-3])
+                    result["sigma_t_lower"] = parse_legacy_float(l_nums[-7])
+                    result["sigma_r_lower"] = parse_legacy_float(l_nums[-6])
+                except Exception:
+                    pass
+
+            results.append(result)
+        except Exception as e:
+            parse_errors.append(f"point {pt_idx} (line {upper_row['line_idx'] + 1}): {e}")
 
     if parse_errors:
         logger.error("Legacy output parse errors detected: %s", parse_errors)
@@ -660,7 +694,7 @@ def _parse_out_file(lines: List[str], expected_evals: List[Dict]) -> List[Dict]:
         raise ValueError(
             f"Parsed {len(results)} legacy rows but expected {len(expected_evals)}"
         )
-                
+
     return results
 
 def run_iitpave_from_stack(solver_stack: List[Dict], load_cfg: Dict, eval_points: List[Dict],
