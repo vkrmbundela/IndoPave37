@@ -17,20 +17,60 @@ async function initPyodide() {
   self.postMessage({ type: "status", stage: "loading-packages", message: "Loading NumPy + SciPy..." });
   await pyodide.loadPackage(["numpy", "scipy"]);
 
-  self.postMessage({ type: "status", stage: "loading-solver", message: "Loading Burmister solver..." });
+  self.postMessage({ type: "status", stage: "loading-solver", message: "Loading Burmister solver & optimizer..." });
   // pyBaseUrl is an absolute URL supplied by the main thread (it knows Vite's
   // BASE_URL). In dev: http://localhost:5173/py/  In Pages: .../flex-pave/py/
   const base = (pyBaseUrl || "/py/").replace(/\/?$/, "/");
-  const solverUrl = base + "burmister.py";
-  const resp = await fetch(solverUrl);
-  if (!resp.ok) throw new Error("Failed to fetch solver source from " + solverUrl);
-  const solverSrc = await resp.text();
 
-  pyodide.FS.writeFile("/home/pyodide/burmister.py", solverSrc);
+  // Create package directory structure
+  const dirs = [
+    "/home/pyodide/mep_opt",
+    "/home/pyodide/mep_opt/solver",
+    "/home/pyodide/mep_opt/optimizer",
+    "/home/pyodide/mep_opt/cost"
+  ];
+  for (const d of dirs) {
+    try {
+      pyodide.FS.mkdir(d);
+    } catch (e) {
+      // ignore if directory already exists
+    }
+  }
+
+  const files = [
+    "burmister.py",
+    "optimizer_worker_bridge.py",
+    "mep_opt/__init__.py",
+    "mep_opt/solver/__init__.py",
+    "mep_opt/solver/burmister.py",
+    "mep_opt/solver/geosynthetic.py",
+    "mep_opt/solver/irc37.py",
+    "mep_opt/solver/materials.py",
+    "mep_opt/solver/legacy_bridge.py",
+    "mep_opt/solver/iitpave_bridge.py",
+    "mep_opt/solver/solver_facade.py",
+    "mep_opt/solver/sp72.py",
+    "mep_opt/optimizer/__init__.py",
+    "mep_opt/optimizer/problem.py",
+    "mep_opt/optimizer/smart_search.py",
+    "mep_opt/cost/__init__.py"
+  ];
+
+  await Promise.all(
+    files.map(async (file) => {
+      const url = base + file;
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error("Failed to fetch solver source: " + url);
+      const text = await resp.text();
+      pyodide.FS.writeFile("/home/pyodide/" + file, text);
+    })
+  );
+
   pyodide.runPython("import sys; sys.path.insert(0, '/home/pyodide')");
   pyodide.runPython("import burmister");
+  pyodide.runPython("import optimizer_worker_bridge");
 
-  self.postMessage({ type: "status", stage: "ready", message: "Solver ready." });
+  self.postMessage({ type: "status", stage: "ready", message: "Solver & Optimizer ready." });
   return pyodide;
 }
 
@@ -90,6 +130,20 @@ json.dumps({"status": "success", "results": _out,
   return JSON.parse(responseJson);
 }
 
+async function handleOptimize(request) {
+  const pyodide = await getPyodide();
+  pyodide.globals.set("_req_json", JSON.stringify(request));
+  const responseJson = pyodide.runPython(`
+import optimizer_worker_bridge
+optimizer_worker_bridge.run_optimize(_req_json)
+`);
+  const parsed = JSON.parse(responseJson);
+  if (parsed.status === "error") {
+    throw new Error(parsed.message + "\n" + parsed.traceback);
+  }
+  return parsed;
+}
+
 self.onmessage = async (event) => {
   const { id, type, payload, pyBaseUrl: incomingBase } = event.data || {};
   if (incomingBase && !pyBaseUrl) pyBaseUrl = incomingBase;
@@ -100,6 +154,9 @@ self.onmessage = async (event) => {
     } else if (type === "solve") {
       const result = await handleSolve(payload);
       self.postMessage({ id, type: "solve-result", result });
+    } else if (type === "optimize") {
+      const result = await handleOptimize(payload);
+      self.postMessage({ id, type: "optimize-result", result });
     } else {
       self.postMessage({ id, type: "error", error: "Unknown message type: " + type });
     }

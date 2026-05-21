@@ -117,9 +117,11 @@ export function getSolverMode() {
   return MODE;
 }
 
-// Optimize is too heavy for a first pass — keep it on the backend for now.
-// When VITE_SOLVER_MODE === "browser" and no backend is reachable, this throws.
-export async function runOptimize(request) {
+async function optimizeViaBrowser(request) {
+  return workerRequest("optimize", request);
+}
+
+async function optimizeViaBackend(request) {
   const res = await fetch(`${API_BASE}/api/optimize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -141,5 +143,17 @@ export async function runOptimize(request) {
     return await res.json();
   } catch (err) {
     throw new Error("Invalid response format received from optimizer backend.");
+  }
+}
+
+export async function runOptimize(request) {
+  if (MODE === "browser") return optimizeViaBrowser(request);
+  if (MODE === "backend") return optimizeViaBackend(request);
+  // auto
+  try {
+    return await optimizeViaBrowser(request);
+  } catch (err) {
+    emitStatus({ stage: "fallback", message: `Browser optimizer failed (${err.message}); falling back to backend.` });
+    return optimizeViaBackend(request);
   }
 }

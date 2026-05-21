@@ -6,7 +6,7 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import AdvancedPanel from './v2/AdvancedPanel';
 import KnowledgeAssistant from './v2/modules/knowledge/KnowledgeAssistant';
-import { solveAnalysis, onSolverStatus, getSolverMode } from './lib/solver-client';
+import { solveAnalysis, runOptimize, onSolverStatus, getSolverMode } from './lib/solver-client';
 import { useResizableTable } from './lib/useResizableTable';
 
 function ColGrip({ rt, i }) {
@@ -472,57 +472,36 @@ export default function App() {
     setIsSolving(true); setError(null); setOptimizedDesigns(null); setResults(null); setOptimizationMode(true);
     try {
       const parsedCtbSpectrum = useCtbSpectrum ? normalizeCtbAxleSpectrum(ctbSpectrumText) : null;
-      const res = await fetch(`${API_BASE}/api/optimize`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-          layers: layers.map(l=>({
-            layer_type: layerType(l) || l.name,
-            E: l.E,
-            nu: l.nu,
-            is_fixed: l.is_fixed,
-            fixed_thickness: l.fixed_h || 0,
-            min_thickness: l.min_h || 0,
-            max_thickness: l.max_h || 0,
-            geogrid: (GRANULAR_LAYER_TYPES.has(layerType(l)) && l.geogrid) ? l.geogrid : null,
-          })),
-          cvpd,
-          subgrade_cbr: subgradeCbr,
-          temperature,
-          growth_rate: DESIGN_DEFAULTS.growthRate,
-          design_life: DESIGN_DEFAULTS.designLife,
-          lane_factor: DESIGN_DEFAULTS.ldf,
-          vdf: DESIGN_DEFAULTS.vdf,
-          reliability: `${DESIGN_DEFAULTS.reliabilityPercent}%`,
-          wheel_load: load,
-          tire_pressure: pressure,
-          wheel_type: wheelType,
-          wheel_spacing: wheelSpacing,
-          points: points.map(p=>({z:p.z, r:p.r})),
-          material_rates: materialRates,
-          ctb_axle_spectrum: parsedCtbSpectrum && parsedCtbSpectrum.length ? parsedCtbSpectrum : undefined,
-          ctb_per_class_bridge_recompute: ctbPerClassBridgeRecompute,
-          optimize_by_cost: optimizeByCost,
-          optimize_by_co2: optimizeByCo2,
-        }),
+      const data = await runOptimize({
+        layers: layers.map(l=>({
+          layer_type: layerType(l) || l.name,
+          E: l.E,
+          nu: l.nu,
+          is_fixed: l.is_fixed,
+          fixed_thickness: l.fixed_h || 0,
+          min_thickness: l.min_h || 0,
+          max_thickness: l.max_h || 0,
+          geogrid: (GRANULAR_LAYER_TYPES.has(layerType(l)) && l.geogrid) ? l.geogrid : null,
+        })),
+        cvpd,
+        subgrade_cbr: subgradeCbr,
+        temperature,
+        growth_rate: DESIGN_DEFAULTS.growthRate,
+        design_life: DESIGN_DEFAULTS.designLife,
+        lane_factor: DESIGN_DEFAULTS.ldf,
+        vdf: DESIGN_DEFAULTS.vdf,
+        reliability: `${DESIGN_DEFAULTS.reliabilityPercent}%`,
+        wheel_load: load,
+        tire_pressure: pressure,
+        wheel_type: wheelType,
+        wheel_spacing: wheelSpacing,
+        points: points.map(p=>({z:p.z, r:p.r})),
+        material_rates: materialRates,
+        ctb_axle_spectrum: parsedCtbSpectrum && parsedCtbSpectrum.length ? parsedCtbSpectrum : undefined,
+        ctb_per_class_bridge_recompute: ctbPerClassBridgeRecompute,
+        optimize_by_cost: optimizeByCost,
+        optimize_by_co2: optimizeByCo2,
       });
-      if (!res.ok) {
-        let detail = `Server ${res.status}`;
-        try {
-          const err = await res.json();
-          detail = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
-        } catch {
-          if (res.status === 404) {
-            detail = "Optimizer endpoint not found (404). Please verify that your local backend is running.";
-          }
-        }
-        throw new Error(detail || `Server ${res.status}`);
-      }
-      let data;
-      try {
-        data = await res.json();
-      } catch {
-        throw new Error("Invalid response format received from optimizer backend.");
-      }
       setOptimizedDesigns(data.adequate_designs || []);
       setSp72Info(data.sp72 || null);
       setReinforcementInfo(data.reinforcement && data.reinforcement.length ? data.reinforcement : null);
