@@ -1,9 +1,9 @@
-\"\"\"
+"""
 Optimizer Web Worker Bridge
 ===========================
 Bridges JSON requests from the Web Worker JS thread to the mep_opt python package.
 Allows client-side optimization via Pyodide.
-\"\"\"
+"""
 
 import json
 import time
@@ -19,8 +19,8 @@ from mep_opt.solver import sp72 as _sp72
 
 
 def _to_native(value: Any) -> Any:
-    \"\"Convert NumPy types to Python native types for JSON serialization.
-    Replaces NaN/Inf with None to ensure valid JSON output.\"\"\"
+    """Convert NumPy types to Python native types for JSON serialization.
+    Replaces NaN/Inf with None to ensure valid JSON output."""
     if isinstance(value, dict):
         return {k: _to_native(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
