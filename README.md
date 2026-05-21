@@ -1,111 +1,68 @@
-# FlexPave Engineering Cockpit & Solver Suite
+# FlexPave — Pavement Design & Optimization Suite
 
-FlexPave is a high-performance pavement analysis, structural evaluation, and optimization platform aligned with **IRC:37-2019** (for highway design) and **IRC:SP:72-2015** (for low-volume roads). It wraps the legacy **IIT Pave Fortran executable** in a thread-safe Python bridge and offers an interactive, premium **Zero-Scroll CAD-like dashboard** built with React and Tailwind CSS v4.
-
----
-
-## 🚀 One-Click Quick Start (Windows)
-
-To start both the frontend and backend servers locally with a single click, run:
-```bash
-.\run_local.bat
-```
-This batch script will:
-1. Automatically search for a Python virtual environment (`.venv` or `venv`).
-2. Install Python dependencies from `mep_opt/requirements.txt` if needed.
-3. Check if frontend node packages are present (and run `npm install` if missing).
-4. Spin up the FastAPI backend on `http://127.0.0.1:8000`.
-5. Launch the Vite dev server and automatically open the dashboard in your default browser.
+FlexPave is a high-performance pavement analysis, structural evaluation, and optimization platform aligned with **IRC:37-2019** (for highways) and **IRC:SP:72-2015** (for low-volume roads). It offers an interactive, premium **Zero-Scroll CAD-like dashboard** hosted directly in your web browser.
 
 ---
 
-## 🛠️ Architecture & Tech Stack
+## 🌐 Live Web Application
 
-```
-                                  +------------------------------------+
-                                  |         React 19 Frontend          |
-                                  |       (Hosted on GitHub Pages)     |
-                                  +-----------------+------------------+
-                                                    |
-                                           REST API / JSON
-                                                    |
-                                                    v
-                                  +------------------------------------+
-                                  |          FastAPI Backend           |
-                                  |     (Runs Locally / Uvicorn)       |
-                                  +-----------------+------------------+
-                                                    |
-                                            Temp File Bridge
-                                                    |
-                                                    v
-                                  +------------------------------------+
-                                  |     IIT Pave Legacy Executable     |
-                                  |    (Fortran Solver, Thread-Safe)   |
-                                  +------------------------------------+
-```
-
-* **Frontend**: React 19, Vite, Tailwind CSS v4, and Recharts. Hosted statically on GitHub Pages.
-* **Backend**: Python 3.10+ (FastAPI, Uvicorn) wrapping the legacy Fortran bridge (`iitpave_bridge.py`). Runs locally on your machine.
-* **Database/Solver**: Local database of materials properties and automated design equation compliance against **IRC:37-2019** and **IRC:SP:72-2015**.
+Access the application instantly:
+👉 **[FlexPave Web Interface](https://vkrmbundela.github.io/flex-pave/)**
 
 ---
 
-## 🎯 Key Features
+## ⚙️ How the Software Works
 
-1. **Smart Search Optimizer**: A deterministic two-phase search engine (Cheapest-first Greedy Climb followed by a Boundary Grid Sweep) that compiles three design archetypes:
-   - **Economy**: Thinnest adequate design.
-   - **Balanced**: Best trade-off in thickness, cost, and safety margin.
-   - **Premium**: Lowest Cumulative Damage Factor (CDF) for maximum pavement life.
-2. **Advanced Panels**:
-   - **3D Strain Bulbs**: Interactive visualization of strain fields under standard dual-wheel axle loads.
-   - **Monte Carlo Sensitivity**: Run stochastic evaluations on material properties and layer thicknesses to see reliability profiles.
-   - **Low-Volume Roads (IRC:SP:72-2015)**: Multi-regime design calculations for low-traffic rural pavement layers.
-   - **Geosynthetic Layer Reinforcement**: Design and evaluate subgrades reinforced with geosynthetic materials.
-3. **Persisted Design System**: Custom layout splitter preserving panels with automated local storage caching and JSON configuration export/import.
+FlexPave operates using a hybrid engineering-optimization stack designed to find structural pavement designs that satisfy regulatory criteria while minimizing cost and carbon footprint:
 
----
+### 1. Structural Solver
+The software evaluates pavement designs using elastic layer theory. It determines critical strains under standard dual-wheel axle configurations:
+* **Tensile Strain ($\varepsilon_t$)** at the bottom of the bituminous layer (fatigue).
+* **Vertical Strain ($\varepsilon_v$)** at the top of the subgrade layer (rutting).
 
-## 🔬 Solver Accuracy & Validation
+These computed strains are checked against the performance equations defined by **IRC:37-2019** to ensure adequate design life (under the target Cumulative Damage Factor).
+* *Accuracy*: FlexPave is validated to produce strain and deflection results within **<1-2% deviation** compared to classical pavement benchmarks (e.g., RPS1, Case2, and TIHAN1).
 
-FlexPave has been validated against classical benchmark cases (**rps1**, **case2**, and **TIHAN1**):
-* **Accuracy**: Computes critical tensile strain ($\varepsilon_t$) and vertical subgrade strain ($\varepsilon_v$) within **<1–2%** deviation from the legacy Fortran outputs.
-* **Test Suite**: Includes 190+ automated tests verifying optimization limits, material modulus calculations, and IRC compliance.
-
----
-
-## 🔧 Manual Setup & Commands
-
-If you prefer to run servers individually:
-
-### 1. Backend Setup & Startup
-```bash
-# Initialize virtual environment
-python -m venv .venv
-.\.venv\Scripts\activate
-
-# Install requirements
-pip install -r mep_opt/requirements.txt
-
-# Start FastAPI server
-python -m mep_opt.web.main
-```
-The backend server runs on `http://127.0.0.1:8000`.
-
-### 2. Frontend Setup & Startup
-```bash
-cd frontend
-npm install
-npm run dev
-```
-The frontend dev server runs on `http://localhost:5173`.
-
-### 3. Run Backend Tests
-```bash
-.\.venv\Scripts\pytest mep_opt/tests/ -v
-```
+### 2. Smart Pavement Search Optimizer
+Instead of running arbitrary heuristics, FlexPave employs a deterministic, two-phase grid-search algorithm:
+* **Phase 1 (Greedy Climb)**: Starting from minimum thickness limits, it iteratively increments the thickness of the most cost-effective layer by 5mm until the design first satisfies IRC:37 adequacy.
+* **Phase 2 (Boundary Sweep)**: It sweeps all 5mm combinations within a window around the Phase 1 result to identify all adequate alternatives, compiling three engineering archetypes:
+  * **Economy**: The thinnest adequate pavement structure.
+  * **Balanced**: The midpoint design offering the best trade-off between total thickness, cost, and safety margin.
+  * **Premium**: The design with the lowest Cumulative Damage Factor, yielding maximum pavement life.
 
 ---
 
-## 📄 License
+## 🖥️ How to Use the Web Application
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+The zero-scroll engineering cockpit is split into interactive control, preview, and results panels:
+
+### Step 1: Configure Pavement Layers
+1. In the **Pavement Layers Grid**, you can add, remove, or modify layers.
+2. For each layer, specify:
+   * **Thickness** (mm) and its search limits (min/max boundaries).
+   * **Elastic Modulus** (MPa) and **Poisson's Ratio**.
+   * **Unit Cost** (per $m^3$) and **CO₂ Footprint** (per $m^3$) for environmental estimation.
+
+### Step 2: Configure Axle Load & Design Parameters
+In the parameters sidebar, configure your project specifics:
+* **Design Traffic**: Set the design traffic loading in Million Standard Axles (MSA).
+* **Reliability Level**: Select the target design reliability (e.g., 90% or 95%).
+* **Axle Configuration**: Define wheel loads, contact pressure, and coordinates for structural strain analysis.
+
+### Step 3: Run the Optimizer
+1. Under **Opt Target**, toggle whether to optimize by **Thickness**, **Cost**, or **Carbon Footprint (CO₂)**.
+2. Click **Run Optimizer**.
+3. The comparison charts and three archetype design cards (Economy, Balanced, Premium) will populate instantly. Click on any archetype card to inspect its detailed layer layout and strain margins.
+
+### Step 4: Explore Advanced Engineering Panels
+Switch between the tabs at the bottom of the dashboard to run supplementary evaluations:
+* **3D Strain Bulbs**: Visualizes the propagation of strain fields ($x$, $y$, $z$) beneath the dual wheels to identify high-stress concentration zones.
+* **Monte Carlo Sensitivity**: Run stochastic evaluations on material properties and layer thicknesses to see probability distributions of pavement life.
+* **Low Volume Roads (IRC:SP:72-2015)**: Switches parameters to design gravel, soil, and thin bituminous bases for rural corridors.
+* **Geosynthetic Reinforcement**: Insert reinforcement grids to calculate the reduction in aggregate base thickness required.
+
+### Step 5: Save & Export Your Project
+* **Auto-Save**: The cockpit automatically saves your configuration locally.
+* **Export Config**: Click **Export** to download your pavement project as a `.json` file.
+* **Import Config**: Drag-and-drop or upload a previously exported configuration to resume your design work.
