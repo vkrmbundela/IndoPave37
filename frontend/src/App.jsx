@@ -5,7 +5,6 @@ import {
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import AdvancedPanel from './v2/AdvancedPanel';
-import KnowledgeAssistant from './v2/modules/knowledge/KnowledgeAssistant';
 import { solveAnalysis, runOptimize, onSolverStatus, getSolverMode } from './lib/solver-client';
 import { useResizableTable } from './lib/useResizableTable';
 
@@ -361,7 +360,6 @@ export default function App() {
   const [reinforcementInfo, setReinforcementInfo] = useState(null);
   const [showInstructions, setShowInstructions] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showKnowledge, setShowKnowledge] = useState(false);
   const [hasStarted, setHasStarted] = useState(savedData.hasStarted || false);
   const [materialRates, setMaterialRates] = useState(savedData.materialRates || DEFAULT_MATERIAL_RATES);
   const [showRatesPanel, setShowRatesPanel] = useState(savedData.showRatesPanel || false);
@@ -1372,36 +1370,7 @@ export default function App() {
         </div>
       )}
 
-      {showKnowledge && (
-        <div className="fixed bottom-24 right-5 z-[70] w-[min(92vw,430px)] h-[min(74vh,640px)] bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl border border-orange-200 overflow-hidden flex flex-col">
-          <div className="flex justify-between items-center px-3 py-2.5 border-b border-orange-200 bg-gradient-to-r from-slate-800 to-slate-700 text-white">
-            <div className="flex items-center gap-2">
-              <div className="h-8 w-8 rounded-full bg-white/15 border border-white/20 flex items-center justify-center">
-                <Book size={14} className="text-orange-300" />
-              </div>
-              <div>
-                <h2 className="text-xs font-bold tracking-wide uppercase">FlexPave Bot</h2>
-                <p className="text-[10px] text-slate-200">Ask questions in plain language</p>
-              </div>
-            </div>
-            <button onClick={()=>setShowKnowledge(false)} className="text-slate-200 hover:text-white p-1 rounded hover:bg-white/10"><X size={14}/></button>
-          </div>
-          <KnowledgeAssistant apiBase={API_BASE} />
-        </div>
-      )}
 
-      <button
-        onClick={() => setShowKnowledge(v => !v)}
-        className={cn(
-          "fixed bottom-5 right-5 z-[75] h-14 w-14 rounded-full shadow-xl border flex items-center justify-center transition-all duration-200",
-          showKnowledge
-            ? "bg-slate-800 border-slate-700 text-white hover:bg-slate-900"
-            : "bg-orange-500 border-orange-400 text-white hover:bg-orange-600"
-        )}
-        title={showKnowledge ? "Close FlexPave Bot" : "Open FlexPave Bot"}
-      >
-        {showKnowledge ? <X size={20} /> : <Book size={20} />}
-      </button>
 
       {showAdvanced && (
         <AdvancedPanel

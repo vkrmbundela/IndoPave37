@@ -23,7 +23,6 @@ from mep_opt.solver.legacy_bridge import is_bridge_available, run_bridge_from_st
 from mep_opt.solver.irc37 import TrafficInput, SubgradeInput, ReliabilityLevel
 from mep_opt.optimizer.problem import OptimizationProblem
 from mep_opt.optimizer.smart_search import SmartPavementSearch
-from mep_opt.web.knowledge_qa import IrcKnowledgeService, ChunkFilters
 from mep_opt.solver.irc37 import AxleLoadGroup
 
 # Initialize Logging
@@ -48,9 +47,6 @@ try:
     app.include_router(advanced_router)
 except ImportError:
     logger.warning("Advanced router could not be imported. Some V2 endpoints will be missing.")
-
-# Local IRC corpus retrieval service (lazy-loaded on first request)
-knowledge_service = IrcKnowledgeService()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -786,133 +782,6 @@ async def generate_pdf_report(data: PdfReportRequest):
     except Exception as e:
         logger.error(f"PDF Generation Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------------------
-# IRC Knowledge Endpoints
-# ---------------------------------------------------------------------------
-
-class KnowledgeFiltersInput(BaseModel):
-    page_min: Optional[int] = None
-    page_max: Optional[int] = None
-    heading_contains: Optional[str] = None
-    has_equation: Optional[bool] = None
-
-
-class KnowledgeSearchRequest(BaseModel):
-    query: str
-    top_k: int = 5
-    snippet_length: int = 480
-    filters: Optional[KnowledgeFiltersInput] = None
-
-
-class KnowledgeSearchHit(BaseModel):
-    chunk_id: str
-    page_start: int
-    page_end: int
-    heading: str
-    has_equation: bool
-    score: float
-    snippet: str
-
-
-class KnowledgeSearchResponse(BaseModel):
-    status: str
-    query: str
-    total_chunks: int
-    candidate_chunks: int
-    matched_chunks: int
-    returned_chunks: int
-    results: List[KnowledgeSearchHit]
-
-
-class KnowledgeAskRequest(BaseModel):
-    query: str
-    top_k: int = 4
-    max_answer_chars: int = 900
-    filters: Optional[KnowledgeFiltersInput] = None
-
-
-class KnowledgeCitation(BaseModel):
-    chunk_id: str
-    page_start: int
-    page_end: int
-    heading: str
-    score: float
-
-
-class KnowledgeAskResponse(BaseModel):
-    status: str
-    query: str
-    answer: str
-    citations: List[KnowledgeCitation]
-    retrieved_chunks: int
-
-
-def _to_chunk_filters(filters: Optional[KnowledgeFiltersInput]) -> Optional[ChunkFilters]:
-    if filters is None:
-        return None
-
-    if filters.page_min is not None and filters.page_max is not None:
-        if filters.page_min > filters.page_max:
-            raise ValueError("filters.page_min must be <= filters.page_max")
-
-    return ChunkFilters(
-        page_min=filters.page_min,
-        page_max=filters.page_max,
-        heading_contains=filters.heading_contains,
-        has_equation=filters.has_equation,
-    )
-
-
-@app.post("/api/knowledge/search", response_model=KnowledgeSearchResponse)
-async def search_irc_knowledge(data: KnowledgeSearchRequest):
-    """BM25-backed search over the local IRC corpus with metadata filters."""
-    try:
-        filters = _to_chunk_filters(data.filters)
-        payload = await asyncio.to_thread(
-            knowledge_service.search,
-            data.query,
-            data.top_k,
-            filters,
-            data.snippet_length,
-        )
-
-        # Hide full chunk text from the public API payload.
-        for row in payload.get("results", []):
-            row.pop("text", None)
-
-        return KnowledgeSearchResponse(**payload)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Knowledge search error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/knowledge/ask", response_model=KnowledgeAskResponse)
-async def ask_irc_knowledge(data: KnowledgeAskRequest):
-    """Return a lightweight extractive answer plus citations from local corpus."""
-    try:
-        filters = _to_chunk_filters(data.filters)
-        payload = await asyncio.to_thread(
-            knowledge_service.ask,
-            data.query,
-            data.top_k,
-            filters,
-            data.max_answer_chars,
-        )
-        return KnowledgeAskResponse(**payload)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Knowledge ask error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 if __name__ == "__main__":
     import uvicorn
