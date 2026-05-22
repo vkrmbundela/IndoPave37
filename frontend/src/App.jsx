@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Save, Play, Settings, Plus, Trash2, ArrowRight, Table2, Loader2, Info, X, Download, Upload, Book, RotateCcw, Database, Layers, Zap, AlertCircle, MoreHorizontal, IndianRupee, Activity
 } from 'lucide-react';
@@ -30,9 +30,7 @@ function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
+
 
 function normalizeCtbAxleSpectrum(text) {
   const raw = String(text || '').trim();
@@ -66,54 +64,6 @@ function normalizeCtbAxleSpectrum(text) {
   });
 }
 
-/* ─── Drag-to-resize hook ─── */
-function useSplitter(initialValue, direction) {
-  const [size, setSize] = useState(initialValue);
-  const dragging = useRef(false);
-  const startPos = useRef(0);
-  const startSize = useRef(0);
-
-  const onPointerDown = useCallback((e) => {
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    e.preventDefault();
-    dragging.current = true;
-    startPos.current = direction === 'horizontal' ? e.clientX : e.clientY;
-    startSize.current = size;
-    document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
-    document.body.style.userSelect = 'none';
-    if (e.currentTarget?.setPointerCapture) {
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId);
-      } catch {
-        // Ignore capture failures and fall back to window listeners.
-      }
-    }
-
-    const onPointerMove = (ev) => {
-      if (!dragging.current) return;
-      const delta = direction === 'horizontal'
-        ? startPos.current - ev.clientX  // for right-side panel, dragging left = bigger
-        : startPos.current - ev.clientY; // for bottom panel, dragging up = bigger
-      const newSize = Math.max(100, startSize.current + delta);
-      setSize(newSize);
-    };
-
-    const onPointerUp = () => {
-      dragging.current = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', onPointerUp);
-      window.removeEventListener('pointercancel', onPointerUp);
-    };
-
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
-    window.addEventListener('pointercancel', onPointerUp);
-  }, [size, direction]);
-
-  return [size, onPointerDown];
-}
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
 
@@ -372,16 +322,14 @@ export default function App() {
   const [debugMode, setDebugMode] = useState(false); // Default to off for production
   const fileInputRef = useRef(null);
 
-  // Resizable splitters
-  const [previewWidth, onPreviewDrag] = useSplitter(savedData.previewWidth || 300, 'horizontal');
-  const [bottomHeight, onBottomDrag] = useSplitter(clamp(savedData.bottomHeight || 380, 380, 520), 'vertical');
+
 
   // Auto-Save Effect
   useEffect(() => {
     const dataToSave = {
       layers, numLayers, load, pressure, wheelType, wheelSpacing, points, numPoints,
       cvpd, subgradeCbr, temperature, results, optimizationMode,
-      optimizedDesigns, hasStarted, previewWidth, bottomHeight,
+      optimizedDesigns, hasStarted,
       materialRates, showRatesPanel,
       showCtbPanel, useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
       optimizeByCost, optimizeByCo2,
@@ -390,7 +338,7 @@ export default function App() {
   }, [
     layers, numLayers, load, pressure, wheelType, wheelSpacing, points, numPoints,
     cvpd, subgradeCbr, temperature, results, optimizationMode,
-    optimizedDesigns, hasStarted, previewWidth, bottomHeight,
+    optimizedDesigns, hasStarted,
     materialRates, showRatesPanel, debugMode,
     showCtbPanel, useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
     optimizeByCost, optimizeByCo2,
@@ -611,7 +559,7 @@ export default function App() {
 
   /* ── MAIN DASHBOARD ── */
   return (
-    <div className="min-h-[100svh] min-h-[100dvh] w-full bg-transparent text-gray-800 font-sans flex flex-col overflow-hidden">
+    <div className="min-h-[100svh] min-h-[100dvh] w-full bg-transparent text-gray-800 font-sans flex flex-col">
 
       {/* TOOLBAR */}
       <div className="flex-none flex items-center justify-between fp-glass-bar px-3 py-1.5 relative z-30">
@@ -755,14 +703,14 @@ export default function App() {
         </div>
       </div>
 
-      {/* WORKSPACE: top row (inputs + preview) and bottom row (results) */}
-      <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+      {/* WORKSPACE: inputs, preview, and results flow in a scrollable column */}
+      <div className="flex-1 flex flex-col">
 
-        {/* ═══ TOP HALF: Inputs + Preview ═══ */}
-        <div style={{ height: `calc(100% - ${bottomHeight}px)` }} className="flex min-h-0 overflow-hidden">
+        {/* ═══ TOP: Inputs + Preview ═══ */}
+        <div className="flex flex-col lg:flex-row">
 
           {/* ── Left: All inputs ── */}
-          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto bg-white min-w-0">
+          <div className="flex-1 flex flex-col bg-white min-w-0">
 
             {/* Layer Table */}
             <div className="px-3 pt-2 pb-1.5 border-b border-gray-100">
@@ -1060,45 +1008,26 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── Vertical Splitter ── */}
-          <div className="relative w-1.5 flex-none group">
-            <div
-              onPointerDown={onPreviewDrag}
-              className="absolute -left-3 -right-3 -top-3 -bottom-3 cursor-col-resize z-20 select-none touch-none"
-              title="Drag to resize"
-            />
-            <div className="absolute inset-0 pointer-events-none bg-gray-200 group-hover:bg-orange-400 group-active:bg-orange-500 transition-colors" />
-          </div>
-
           {/* ── Right: Compact Preview ── */}
-          <div style={{ width: previewWidth }} className="flex-none flex flex-col bg-slate-50/70 min-h-0">
+          <div className="w-full lg:w-[300px] flex-none flex flex-col bg-slate-50/70 border-t lg:border-t-0 lg:border-l border-gray-100">
             <div className="flex-none px-2.5 py-1.5 fp-head-strip text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
               <span className="inline-block w-1 h-3 rounded-full" style={{background:'var(--accent-grad)'}}></span>
               Cross Section Preview
             </div>
-            <div className="flex-1 p-1.5 flex items-center justify-center min-h-0 overflow-hidden">
+            <div className="p-1.5 flex items-center justify-center" style={{minHeight: 200}}>
               <PavementVisualizer layers={layers} points={points} wheelType={wheelType}/>
             </div>
           </div>
         </div>
 
-        {/* ── Horizontal Splitter ── */}
-        <div className="relative h-3 flex-none group">
-          <div
-            onPointerDown={onBottomDrag}
-            className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-3 cursor-row-resize z-20 select-none touch-none"
-            title="Drag to resize"
-          />
-          <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-0.5 pointer-events-none bg-gray-200 group-hover:bg-orange-400 group-active:bg-orange-500 transition-colors" />
-        </div>
-
         {/* ═══ BOTTOM: Results ═══ */}
-        <div style={{ height: bottomHeight }} className="flex-none flex flex-col bg-white min-h-0 overflow-hidden">
+        {/* ═══ Results ═══ */}
+        <div className="flex flex-col bg-white border-t border-gray-200">
           <div className="flex-none px-3 py-1.5 fp-head-strip flex items-center justify-between">
             <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wide flex items-center gap-1.5"><Table2 size={12} className="text-orange-600"/> Output Results</span>
             {results && !optimizationMode && <span className="text-[10px] text-slate-400 font-mono">{results.length} point(s)</span>}
           </div>
-          <div className="flex-1 overflow-auto min-h-0">
+          <div className="overflow-auto">
             {error && <div className="m-2 text-red-700 bg-red-50 border border-red-200 p-2 rounded text-xs">{error}</div>}
 
             {optimizationMode && optimizedDesigns ? (
@@ -1357,7 +1286,7 @@ export default function App() {
               <div className="bg-orange-50/50 p-3 rounded-md border border-orange-100">
                 <h3 className="font-bold text-orange-900 mb-1 text-[11px] flex items-center gap-1"><Settings size={12}/> Pro-User Controls</h3>
                 <ul className="list-disc ml-5 text-[10px] space-y-1 text-orange-800">
-                  <li><strong>Resizable HUD:</strong> Drag the thin gray splitters to expand the Layer table, Visualizer, or Results view.</li>
+                  <li><strong>Scrollable Layout:</strong> Scroll the full page to access Layer tables, Visualizer, and Results.</li>
                   <li><strong>Visualizer:</strong> Real-time animation of layer thicknesses and analysis point locations.</li>
                   <li><strong>Data Handling:</strong> Use <strong>Export</strong> to save your current project state as a .JSON file and <strong>Import</strong> to resume later.</li>
                 </ul>
