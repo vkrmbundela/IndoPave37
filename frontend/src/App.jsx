@@ -1866,14 +1866,14 @@ export default function App() {
                           <strong>Define Trial Structure:</strong> In the central layers grid, specify layer materials, thicknesses ($h$ in mm), resilient modulus ($E$ in MPa), and Poisson's ratio ($\nu$).
                         </li>
                         <li>
-                          <strong>Set Traffic and Subgrade parameters:</strong> Enter MSA and Subgrade CBR (%) in the left sidebar. The Resilient Modulus ($M_{RS}$) is calculated automatically using:
+                          <strong>Set Traffic and Subgrade parameters:</strong> Enter MSA and Subgrade CBR (%) in the left sidebar. The Resilient Modulus ({"$M_{RS}$"}) is calculated automatically using:
                           <div className="bg-[var(--surface-sunken)] p-2 rounded-md font-mono my-1.5 text-[10px] text-[var(--text-bold)] border border-[var(--hairline)]">
                             CBR ≤ 5%: MR = 10 × CBR (MPa) <br />
                             CBR &gt; 5%: MR = 17.6 × CBR^0.64 (MPa)
                           </div>
                         </li>
                         <li>
-                          <strong>Set Loading Details:</strong> Define Total Wheel Load ($N$), Tyre Pressure (MPa), and Wheel Type (Single vs Dual). Dual wheels have a default spacing of $310\text{ mm}$ (center-to-center).
+                          <strong>Set Loading Details:</strong> Define Total Wheel Load ($N$), Tyre Pressure (MPa), and Wheel Type (Single vs Dual). Dual wheels have a default spacing of 310 mm (center-to-center).
                         </li>
                         <li>
                           <strong>Position Analysis Coordinates:</strong> Add coordinates in the Analysis Points Grid where you want to calculate stresses/strains (e.g., bottom of bituminous layer or top of subgrade).
@@ -2054,7 +2054,7 @@ export default function App() {
                         <div>
                           <h4 className="font-bold text-[var(--text-bold)] text-[11px] mb-1">🚒 Cement Treated Base (CTB) Axle Spectrum Analysis</h4>
                           <p className="text-[11px]">
-                            Enables damage evaluation for Cement Treated Bases using fatigue damage accumulation ($CFD \le 1.0$). Solves fatigue distress ratios against the CTB Modulus of Rupture ($M_R \approx 1.4\text{ MPa}$) across a full axle load spectrum array.
+                            Enables damage evaluation for Cement Treated Bases using fatigue damage accumulation ($CFD \le 1.0$). Solves fatigue distress ratios against the CTB Modulus of Rupture ($M_R \approx 1.4$ MPa) across a full axle load spectrum array.
                           </p>
                         </div>
                       </div>
