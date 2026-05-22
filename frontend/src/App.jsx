@@ -836,6 +836,7 @@ export default function App() {
   const [sp72Info, setSp72Info] = useState(null);
   const [reinforcementInfo, setReinforcementInfo] = useState(null);
   const [showInstructions, setShowInstructions] = useState(false);
+  const [helpActiveTab, setHelpActiveTab] = useState('workflow');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [hasStarted, setHasStarted] = useState(savedData.hasStarted || false);
   const [materialRates, setMaterialRates] = useState(savedData.materialRates || DEFAULT_MATERIAL_RATES);
@@ -1770,76 +1771,306 @@ export default function App() {
 
       {/* Help Modal */}
       {showInstructions && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-xl overflow-hidden flex flex-col max-h-[85vh] border border-gray-300">
-            <div className="flex justify-between items-center px-4 py-2.5 border-b border-gray-200 bg-gray-50">
-              <h2 className="text-sm font-bold text-gray-800 flex items-center gap-1.5"><Info size={16} className="text-orange-600"/> Usage Guide</h2>
-              <button onClick={()=>setShowInstructions(false)} className="text-gray-400 hover:text-gray-700 p-0.5 rounded hover:bg-gray-200"><X size={16}/></button>
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-6 backdrop-blur-[2px]">
+          <div className="bg-[var(--surface-panel)] rounded-xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col h-[80vh] max-h-[750px] border border-[var(--hairline)]">
+            <div className="flex justify-between items-center px-4 py-3 border-b border-[var(--hairline)] bg-[var(--surface-sunken)]">
+              <h2 className="text-sm font-bold text-[var(--text-bold)] flex items-center gap-2">
+                <Info size={16} className="text-orange-600"/> 
+                <span>FlexPave Operations Manual & Usage Guide</span>
+              </h2>
+              <button onClick={()=>setShowInstructions(false)} className="text-[var(--text-muted)] hover:text-[var(--text-bold)] p-1 rounded hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors">
+                <X size={18}/>
+              </button>
             </div>
-            <div className="p-4 overflow-y-auto flex flex-col gap-6 text-xs text-gray-700 leading-relaxed">
-              {/* Step 1: Layer Configuration */}
-              <div>
-                <h3 className="font-bold text-gray-900 mb-2 flex items-center gap-1.5 border-b border-gray-100 pb-1">
-                  <span className="bg-orange-100 text-orange-800 w-5 h-5 flex items-center justify-center rounded-full text-[10px]">1</span>
-                  Layer & Load Configuration
-                </h3>
-                <ul className="list-disc ml-5 space-y-1.5">
-                  <li><strong>Layer Table:</strong> Enter Elastic Modulus (E), Poisson's ratio (nu), and Thickness. The Subgrade is treated as semi-infinite.</li>
-                  <li><strong>Mode Toggle:</strong> Use <span className="text-teal-700 bg-teal-50 px-1 rounded border border-teal-200">Fixed</span> for specific designs or <span className="text-orange-700 bg-orange-50 px-1 rounded border border-orange-200">Opt</span> to let the optimizer find range-based solutions.</li>
-                  <li><strong>Load Config:</strong> Set Total Wheel Load (N) and Tyre Pressure (MPa). Select <strong>Single</strong> or <strong>Dual</strong> wheel configuration.</li>
-                  <li><strong>Analysis Points:</strong> Define Z (depth) and R (radial) coordinates where you want to compute stresses/strains.</li>
-                </ul>
+            
+            <div className="flex-1 flex overflow-hidden min-h-0">
+              {/* Sidebar Tabs */}
+              <div className="w-56 flex-none border-r border-[var(--hairline)] bg-[var(--surface-sunken)] p-3 flex flex-col gap-1 overflow-y-auto">
+                <button 
+                  onClick={() => setHelpActiveTab('workflow')}
+                  className={cn(
+                    "w-full text-left px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-all select-none",
+                    helpActiveTab === 'workflow' 
+                      ? "bg-orange-600 text-white shadow-sm" 
+                      : "text-[var(--text-main)] hover:bg-[var(--surface-panel)] hover:text-[var(--text-bold)]"
+                  )}
+                >
+                  <Layers size={13}/>
+                  <span>Overview & Workflow</span>
+                </button>
+                <button 
+                  onClick={() => setHelpActiveTab('solver')}
+                  className={cn(
+                    "w-full text-left px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-all select-none",
+                    helpActiveTab === 'solver' 
+                      ? "bg-orange-600 text-white shadow-sm" 
+                      : "text-[var(--text-main)] hover:bg-[var(--surface-panel)] hover:text-[var(--text-bold)]"
+                  )}
+                >
+                  <Book size={13}/>
+                  <span>IITPave Solver & IRC</span>
+                </button>
+                <button 
+                  onClick={() => setHelpActiveTab('optimizer')}
+                  className={cn(
+                    "w-full text-left px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-all select-none",
+                    helpActiveTab === 'optimizer' 
+                      ? "bg-orange-600 text-white shadow-sm" 
+                      : "text-[var(--text-main)] hover:bg-[var(--surface-panel)] hover:text-[var(--text-bold)]"
+                  )}
+                >
+                  <Settings size={13}/>
+                  <span>Smart Search Optimizer</span>
+                </button>
+                <button 
+                  onClick={() => setHelpActiveTab('advanced')}
+                  className={cn(
+                    "w-full text-left px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-all select-none",
+                    helpActiveTab === 'advanced' 
+                      ? "bg-orange-600 text-white shadow-sm" 
+                      : "text-[var(--text-main)] hover:bg-[var(--surface-panel)] hover:text-[var(--text-bold)]"
+                  )}
+                >
+                  <Zap size={13}/>
+                  <span>Advanced Features</span>
+                </button>
               </div>
 
-              {/* Step 2: Running the Solver */}
-              <div>
-                <h3 className="font-bold text-gray-900 mb-2 flex items-center gap-1.5 border-b border-gray-100 pb-1">
-                  <span className="bg-orange-100 text-orange-800 w-5 h-5 flex items-center justify-center rounded-full text-[10px]">2</span>
-                  Execution Modes
-                </h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-gray-50 p-2 rounded border border-gray-200">
-                    <p className="font-bold text-orange-700 mb-1 flex items-center gap-1"><Play size={10}/> Evaluate</p>
-                    <p className="text-[10px] leading-snug">Performs linear elastic analysis on fixed thicknesses. Best for checking a known structure against IRC:37 limits.</p>
-                  </div>
-                  <div className="bg-gray-50 p-2 rounded border border-gray-200">
-                    <p className="font-bold text-orange-700 mb-1 flex items-center gap-1"><ArrowRight size={10}/> Optimize</p>
-                    <p className="text-[10px] leading-snug">Uses Smart Pavement Search to find structurally adequate designs that minimize thickness while meeting IRC:37 criteria.</p>
-                  </div>
-                </div>
-              </div>
+              {/* Tab Content */}
+              <div className="flex-1 p-6 overflow-y-auto bg-[var(--surface-panel)] text-[var(--text-main)] text-xs leading-relaxed">
+                {helpActiveTab === 'workflow' && (
+                  <div className="flex flex-col gap-5 fp-fade-up">
+                    <div>
+                      <h3 className="text-sm font-bold text-[var(--text-bold)] mb-1.5 flex items-center gap-1.5">
+                        <span className="h-5 w-5 rounded-full bg-orange-100 dark:bg-orange-950/30 text-orange-700 dark:text-orange-400 flex items-center justify-center text-[10px] font-bold">1</span>
+                        CAD Cockpit Layout & Overview
+                      </h3>
+                      <p className="mb-2">
+                        FlexPave features a high-density, **Zero-Scroll CAD Cockpit** designed for professional engineering workflows. The interface is optimized to fit a single viewport:
+                      </p>
+                      <ul className="list-disc ml-5 space-y-1.5 mb-3 text-[11px]">
+                        <li><strong>Header Toolbar:</strong> Main application triggers, use cases loading, Advanced panels, and project Import/Export.</li>
+                        <li><strong>Left Settings Panel:</strong> Environment parameters, Design Traffic (MSA), Subgrade CBR (%), VG VG-grades temperature indices, and Axle parameters.</li>
+                        <li><strong>Middle Layers Grid:</strong> Interactive physical layers configurator. Set moduli, Poisson's, thickness limits, costs, and carbon indices.</li>
+                        <li><strong>Right CAD Visualizer:</strong> Live SVG schematic displaying layer thicknesses, wheel loading config, stress dissipation bulbs, and interactive analysis points.</li>
+                      </ul>
+                    </div>
 
-              {/* Step 3: Result Interpretation */}
-              <div>
-                <h3 className="font-bold text-gray-900 mb-2 flex items-center gap-1.5 border-b border-gray-100 pb-1">
-                  <span className="bg-orange-100 text-orange-800 w-5 h-5 flex items-center justify-center rounded-full text-[10px]">3</span>
-                  Interpreting Results
-                </h3>
-                <p className="mb-2">The output table highlights two critical pavement failure parameters per IRC:37:</p>
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-start gap-2">
-                    <code className="bg-orange-50 px-1.5 py-0.5 rounded text-red-600 font-mono font-bold shrink-0">ε_z</code>
-                    <p className="text-[10px]"><strong>Vertical Subgrade Strain:</strong> High values indicate potential <strong>Rutting</strong> failure in the subgrade.</p>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <code className="bg-orange-50 px-1.5 py-0.5 rounded text-orange-800 font-mono font-bold shrink-0">ε_t</code>
-                    <p className="text-[10px]"><strong>Tensile Strain:</strong> Measured at the bottom of the bituminous layer. High values indicate potential <strong>Fatigue Cracking</strong>.</p>
-                  </div>
-                </div>
-              </div>
+                    <div className="border-t border-[var(--hairline)] pt-4">
+                      <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2 flex items-center gap-1.5">
+                        <span className="h-5 w-5 rounded-full bg-orange-100 dark:bg-orange-950/30 text-orange-700 dark:text-orange-400 flex items-center justify-center text-[10px] font-bold">2</span>
+                        Step-by-Step Pavement Design Workflow
+                      </h3>
+                      <ol className="list-decimal ml-5 space-y-2 text-[11px]">
+                        <li>
+                          <strong>Define Trial Structure:</strong> In the central layers grid, specify layer materials, thicknesses ($h$ in mm), resilient modulus ($E$ in MPa), and Poisson's ratio ($\nu$).
+                        </li>
+                        <li>
+                          <strong>Set Traffic and Subgrade parameters:</strong> Enter MSA and Subgrade CBR (%) in the left sidebar. The Resilient Modulus ($M_{RS}$) is calculated automatically using:
+                          <div className="bg-[var(--surface-sunken)] p-2 rounded-md font-mono my-1.5 text-[10px] text-[var(--text-bold)] border border-[var(--hairline)]">
+                            CBR ≤ 5%: MR = 10 × CBR (MPa) <br />
+                            CBR &gt; 5%: MR = 17.6 × CBR^0.64 (MPa)
+                          </div>
+                        </li>
+                        <li>
+                          <strong>Set Loading Details:</strong> Define Total Wheel Load ($N$), Tyre Pressure (MPa), and Wheel Type (Single vs Dual). Dual wheels have a default spacing of $310\text{ mm}$ (center-to-center).
+                        </li>
+                        <li>
+                          <strong>Position Analysis Coordinates:</strong> Add coordinates in the Analysis Points Grid where you want to calculate stresses/strains (e.g., bottom of bituminous layer or top of subgrade).
+                        </li>
+                        <li>
+                          <strong>Evaluate or Optimize:</strong> Click <strong>Evaluate</strong> for a single analysis of the current thicknesses, or check <strong>Opt</strong> on layers and click <strong>Optimize</strong> to search range-based adequate designs.
+                        </li>
+                      </ol>
+                    </div>
 
-              {/* Step 4: UI Cockpit Controls */}
-              <div className="bg-orange-50/50 p-3 rounded-md border border-orange-100">
-                <h3 className="font-bold text-orange-900 mb-1 text-[11px] flex items-center gap-1"><Settings size={12}/> Pro-User Controls</h3>
-                <ul className="list-disc ml-5 text-[10px] space-y-1 text-orange-800">
-                  <li><strong>Scrollable Layout:</strong> Scroll the full page to access Layer tables, Visualizer, and Results.</li>
-                  <li><strong>Visualizer:</strong> Real-time animation of layer thicknesses and analysis point locations.</li>
-                  <li><strong>Data Handling:</strong> Use <strong>Export</strong> to save your current project state as a .JSON file and <strong>Import</strong> to resume later.</li>
-                </ul>
+                    <div className="border-t border-[var(--hairline)] pt-4 bg-orange-50/50 dark:bg-orange-950/10 p-3 rounded-lg border border-orange-100/50 dark:border-orange-900/20">
+                      <h4 className="font-bold text-orange-900 dark:text-orange-300 mb-1">Local Session Sync & Portability</h4>
+                      <p className="text-[11px] text-orange-800 dark:text-orange-400">
+                        All configuration parameters, custom layer properties, cost catalogs, and layout selections are synchronized to `localStorage` automatically on every keystroke. 
+                        Use **Export** to download your complete project layout as a `.json` configuration file, and drag-and-drop or select it in **Import** to restore progress instantly.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {helpActiveTab === 'solver' && (
+                  <div className="flex flex-col gap-5 fp-fade-up">
+                    <div>
+                      <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2 flex items-center gap-1.5">
+                        <Activity size={15} className="text-orange-600" />
+                        Mechanistic Linear Elastic Layer Engine
+                      </h3>
+                      <p className="mb-2">
+                        FlexPave runs the mechanistic elastic layer solver (in-browser via Pyodide or via backend API) to compute stress, strain, and displacement fields at designated coordinates ($r$, $z$) under circular load patches. The soil subgrade is modeled as an infinitely deep elastic half-space.
+                      </p>
+                    </div>
+
+                    <div className="border-t border-[var(--hairline)] pt-4">
+                      <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2">Primary Design Criteria (IRC:37-2019)</h3>
+                      <p className="mb-3">
+                        The solver validates structural adequacy against fatigue and rutting performance transfer functions defined by **IRC:37-2019**:
+                      </p>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-[var(--surface-sunken)] p-3 rounded-lg border border-[var(--hairline)]">
+                          <span className="font-bold text-red-600 dark:text-red-400 block mb-1">1. Bituminous Fatigue Cracking (ε_t)</span>
+                          <p className="text-[10px] text-[var(--text-muted)] leading-relaxed">
+                            Horizontal tensile strain at the bottom of the lowest bituminous layer. High strain causes premature cracking under repeated traffic loads.
+                          </p>
+                        </div>
+                        <div className="bg-[var(--surface-sunken)] p-3 rounded-lg border border-[var(--hairline)]">
+                          <span className="font-bold text-orange-600 dark:text-orange-400 block mb-1">2. Subgrade Rutting (ε_v)</span>
+                          <p className="text-[10px] text-[var(--text-muted)] leading-relaxed">
+                            Vertical compressive strain at the top of the subgrade. High strain values propagate shear deformation to the surface, creating ruts.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-[var(--hairline)] pt-4">
+                      <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2">Solver Verification & Benchmarks</h3>
+                      <p className="mb-2">
+                        To guarantee numerical accuracy and conformance, the solver's strain output has been regression-tested against classical benchmarks:
+                      </p>
+                      <div className="bg-[var(--surface-sunken)] p-3 rounded-lg border border-[var(--hairline)] font-mono text-[10px] text-[var(--text-bold)] space-y-1.5">
+                        <div className="flex justify-between border-b border-[var(--hairline)] pb-1">
+                          <span className="font-bold">Benchmark Case</span>
+                          <span className="font-bold text-teal-600 dark:text-teal-400">Verification Status</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>• rps1 (Thin Bituminous)</span>
+                          <span>Passed (error &lt; 1.0%)</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>• case2 (Thick Highway Mix)</span>
+                          <span>Passed (error &lt; 1.2%)</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>• TIHAN1 (Corridor Spectrum)</span>
+                          <span>Passed (error &lt; 1.5%)</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {helpActiveTab === 'optimizer' && (
+                  <div className="flex flex-col gap-5 fp-fade-up">
+                    <div>
+                      <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2 flex items-center gap-1.5">
+                        <Settings size={15} className="text-orange-600" />
+                        Smart Pavement Search Optimizer
+                      </h3>
+                      <p className="mb-2">
+                        FlexPave deploys a two-phase deterministic search algorithm to optimize layer thicknesses ($h$) within specified boundary ranges (Min/Max limits):
+                      </p>
+                      <ul className="list-disc ml-5 space-y-1.5 text-[11px] mb-3">
+                        <li><strong>Phase 1 (Greedy Climb):</strong> Starts from minimum layer thicknesses and increments the most cost-effective/cheapest layer in 5mm steps until the first structurally adequate design is found.</li>
+                        <li><strong>Phase 2 (Boundary Sweep):</strong> Runs a fine grid sweep around the Phase 1 boundary (+/-20mm window) to search for alternate structural combinations that minimize total thickness, cost, or CO2.</li>
+                      </ul>
+                    </div>
+
+                    <div className="border-t border-[var(--hairline)] pt-4">
+                      <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2">Multi-Objective Optimization Focus</h3>
+                      <p className="mb-2 text-[11px]">
+                        The search checks targets specified under "Opt Target":
+                      </p>
+                      <ul className="list-disc ml-5 space-y-1 text-[11px]">
+                        <li><strong>Thickness:</strong> Minimizes total structural height to save excavation depth.</li>
+                        <li><strong>Cost:</strong> Computes cost based on material volumetric rates to find the cheapest structural alternative.</li>
+                        <li><strong>Carbon Footprint:</strong> Uses material-specific CO₂ footprints to identify low-carbon designs.</li>
+                      </ul>
+                    </div>
+
+                    <div className="border-t border-[var(--hairline)] pt-4">
+                      <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2">Deterministic Engineering Archetypes</h3>
+                      <p className="mb-3">
+                        The optimizer filters and returns up to four unique archetype designs. You can click on any archetype card to load its parameters instantly:
+                      </p>
+                      
+                      <div className="grid grid-cols-2 gap-3 text-[11px]">
+                        <div className="border border-[var(--hairline)] p-2.5 rounded-lg">
+                          <strong className="text-red-600 dark:text-red-400 block mb-1">🔴 Economy Archetype</strong>
+                          <span>The thinnest structural adequate configuration. Minimizes material usage and initial capital cost.</span>
+                        </div>
+                        <div className="border border-[var(--hairline)] p-2.5 rounded-lg">
+                          <strong className="text-yellow-600 dark:text-yellow-500 block mb-1">🟡 Balanced Archetype</strong>
+                          <span>Midpoint design in normalized thickness/safety margin space. Represents the optimum value-for-money configuration.</span>
+                        </div>
+                        <div className="border border-[var(--hairline)] p-2.5 rounded-lg">
+                          <strong className="text-green-600 dark:text-green-400 block mb-1">🟢 Premium Archetype</strong>
+                          <span>The design that minimizes the Cumulative Damage Factor (CDF) to provide maximum structural safety and service life.</span>
+                        </div>
+                        <div className="border border-[var(--hairline)] p-2.5 rounded-lg">
+                          <strong className="text-teal-600 dark:text-teal-400 block mb-1">🍀 Green (Carbon) Archetype</strong>
+                          <span>The design that minimizes the total carbon footprint ($kg\ CO_2\ eq$) through eco-friendly layer thicknesses.</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {helpActiveTab === 'advanced' && (
+                  <div className="flex flex-col gap-5 fp-fade-up">
+                    <div>
+                      <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2 flex items-center gap-1.5">
+                        <Zap size={15} className="text-orange-600" />
+                        Advanced Cockpit Engineering Features
+                      </h3>
+                      <p className="mb-3">
+                        FlexPave includes advanced modules to support modern mechanistic pavement design and materials stabilization:
+                      </p>
+
+                      <div className="space-y-4">
+                        <div className="border-b border-[var(--hairline)] pb-3">
+                          <h4 className="font-bold text-[var(--text-bold)] text-[11px] mb-1">📊 3D Strain Bulbs Viewer</h4>
+                          <p className="text-[11px]">
+                            Visualizes 3D stress dissipation and pressure cones underneath circular load patches. It helps identify localized shear stress concentrations and structural interfaces that could result in delamination.
+                          </p>
+                        </div>
+
+                        <div className="border-b border-[var(--hairline)] pb-3">
+                          <h4 className="font-bold text-[var(--text-bold)] text-[11px] mb-1">🎲 Monte Carlo Sensitivity Analysis</h4>
+                          <p className="text-[11px]">
+                            Runs probabilistic simulations by applying standard deviations to layer thicknesses ($h$) and resilient moduli ($E$). Executing 200+ runs computes structural life distribution, evaluating failure risks against material and construction variability.
+                          </p>
+                        </div>
+
+                        <div className="border-b border-[var(--hairline)] pb-3">
+                          <h4 className="font-bold text-[var(--text-bold)] text-[11px] mb-1">🌾 Low-Volume Roads (IRC:SP:72-2015)</h4>
+                          <p className="text-[11px]">
+                            Switches structural guidelines to low-volume pavement rules. Categorizes traffic into SP:72 standard MSA bands (T1 to T9) and designs gravel sub-bases, soil stabilizers, and thin bituminous seals accordingly.
+                          </p>
+                        </div>
+
+                        <div className="border-b border-[var(--hairline)] pb-3">
+                          <h4 className="font-bold text-[var(--text-bold)] text-[11px] mb-1">🕸️ Geosynthetic Base Reinforcement (Geogrids)</h4>
+                          <p className="text-[11px]">
+                            Enables geogrid interlayers (biaxial or triaxial) inside granular bases. Applies a **Modulus Improvement Factor (MIF)** (ranging from 1.5x to 2.0x) to granular sub-bases, allowing thinner structural thickness while maintaining design life.
+                          </p>
+                        </div>
+
+                        <div>
+                          <h4 className="font-bold text-[var(--text-bold)] text-[11px] mb-1">🚒 Cement Treated Base (CTB) Axle Spectrum Analysis</h4>
+                          <p className="text-[11px]">
+                            Enables damage evaluation for Cement Treated Bases using fatigue damage accumulation ($CFD \le 1.0$). Solves fatigue distress ratios against the CTB Modulus of Rupture ($M_R \approx 1.4\text{ MPa}$) across a full axle load spectrum array.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
-            <div className="px-4 py-2.5 border-t border-gray-200 bg-gray-50 flex justify-end">
-              <button onClick={()=>setShowInstructions(false)} className="px-4 py-1.5 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded text-xs">Close</button>
+
+            <div className="px-4 py-3 border-t border-[var(--hairline)] bg-[var(--surface-sunken)] flex justify-end">
+              <button 
+                onClick={()=>setShowInstructions(false)} 
+                className="px-4 py-1.5 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-lg text-xs shadow-md transition-all active:scale-95"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>

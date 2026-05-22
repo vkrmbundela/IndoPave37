@@ -25,6 +25,11 @@
   --accent-grad: linear-gradient(135deg, #f97316 0%, #ea580c 55%, #f59e0b 100%);
   --accent-soft: #fff4ed;
 
+  /* Text colors */
+  --text-main: #334155;          /* slate-700 */
+  --text-bold: #0f172a;          /* slate-900 */
+  --text-muted: #64748b;         /* slate-500 */
+
   /* Elevation scale (soft, layered — not heavy) */
   --elev-1: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
   --elev-2: 0 2px 4px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.05);
@@ -42,6 +47,20 @@
 }
 
 .theme-dark {
+  /* Surface overrides */
+  --surface-app: #0f172a;        /* app canvas */
+  --surface-panel: #1e293b;      /* raised panels */
+  --surface-sunken: #0b0f19;     /* table headers, wells */
+  --hairline: #334155;           /* crisp 1px borders */
+  --hairline-strong: #475569;
+  --accent-soft: #2c2520;
+
+  /* Text overrides */
+  --text-main: #cbd5e1;          /* slate-300 */
+  --text-bold: #f8fafc;          /* slate-50 */
+  --text-muted: #94a3b8;         /* slate-400 */
+
+  /* Visualizer overrides */
   --vis-bg: #0f172a;
   --vis-grid: #1e293b;
   --vis-grid-major: #334155;
