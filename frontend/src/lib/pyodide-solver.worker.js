@@ -19,7 +19,7 @@ async function initPyodide() {
 
   self.postMessage({ type: "status", stage: "loading-solver", message: "Loading Burmister solver & optimizer..." });
   // pyBaseUrl is an absolute URL supplied by the main thread (it knows Vite's
-  // BASE_URL). In dev: http://localhost:5173/py/  In Pages: .../flex-pave/py/
+  // BASE_URL). In dev: http://localhost:5173/py/  In Pages: .../IndoPave37/py/
   const base = (pyBaseUrl || "/py/").replace(/\/?$/, "/");
 
   // Create package directory structure

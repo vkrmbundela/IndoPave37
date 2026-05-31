@@ -7,6 +7,7 @@ import { twMerge } from 'tailwind-merge';
 import AdvancedPanel from './v2/AdvancedPanel';
 import { solveAnalysis, runOptimize, onSolverStatus, getSolverMode } from './lib/solver-client';
 import { useResizableTable } from './lib/useResizableTable';
+import { subgradeModulusFromCBR } from './lib/irc';
 
 function ColGrip({ rt, i }) {
   return (
@@ -1133,6 +1134,19 @@ export default function App() {
   }, [numLayers]);
 
   useEffect(() => {
+    setLayers(prev => {
+      if (prev.length === 0) return prev;
+      const lastIdx = prev.length - 1;
+      const subgradeLayer = prev[lastIdx];
+      const newE = Number(subgradeModulusFromCBR(subgradeCbr).toFixed(2));
+      if (subgradeLayer && subgradeLayer.E !== newE) {
+        return prev.map((l, i) => i === lastIdx ? { ...l, E: newE } : l);
+      }
+      return prev;
+    });
+  }, [subgradeCbr]);
+
+  useEffect(() => {
     setPoints(prev => {
       const c = [...prev];
       while (c.length < numPoints) c.push({ z:0, r:0 });
@@ -1624,8 +1638,27 @@ export default function App() {
                             </button>
                           ):<span className="text-[10px] text-gray-400">∞</span>}
                         </td>
-                        <td className="py-0.5 px-1"><input type="number" value={l.E} onChange={e=>updateLayer(i,'E',Number(e.target.value))} className={cn(inp,"w-20")}/></td>
-                        <td className="py-0.5 px-1"><input type="number" value={l.nu} onChange={e=>updateLayer(i,'nu',Number(e.target.value))} step="0.01" className={cn(inp,"w-14")}/></td>
+                        <td className="py-0.5 px-1">
+                          <input
+                            type="number"
+                            value={l.E}
+                            onChange={e=>updateLayer(i,'E',Number(e.target.value))}
+                            disabled={sub}
+                            title={sub ? "Determined by Subgrade CBR (%) in Opt Target" : ""}
+                            className={cn(inp,"w-20", sub && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
+                          />
+                        </td>
+                        <td className="py-0.5 px-1">
+                          <input
+                            type="number"
+                            value={l.nu}
+                            onChange={e=>updateLayer(i,'nu',Number(e.target.value))}
+                            step="0.01"
+                            disabled={sub}
+                            title={sub ? "Fixed to 0.35 for Subgrade" : ""}
+                            className={cn(inp,"w-14", sub && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
+                          />
+                        </td>
                         <td className="py-0.5 px-1.5">
                           {sub ? <span className="text-gray-400 text-[11px]">∞</span>
                           : l.is_fixed ? <input type="number" value={l.fixed_h} onChange={e=>updateLayer(i,'fixed_h',Number(e.target.value))} className={cn(inp,"w-20")}/>

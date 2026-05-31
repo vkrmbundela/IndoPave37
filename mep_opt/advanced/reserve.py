@@ -63,6 +63,8 @@ def compute_reserve(
         never sees Infinity / NaN.
     """
     rel = _RELIABILITY_MAP.get(reliability, ReliabilityLevel.R80)
+    if design_msa >= 20.0 and rel == ReliabilityLevel.R80:
+        rel = ReliabilityLevel.R90
 
     result = find_intercept_msa(
         eps_t=eps_t,

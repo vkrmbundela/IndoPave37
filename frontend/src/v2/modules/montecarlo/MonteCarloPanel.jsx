@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Dice5, Play, AlertCircle } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer, Cell } from 'recharts';
 import useAdvancedApi from '../../hooks/useAdvancedApi';
@@ -9,8 +9,19 @@ export default function MonteCarloPanel({ sharedState }) {
   const [result, setResult] = useState(null);
   const [nSims, setNSims] = useState(200);
   const [sigmas, setSigmas] = useState(() =>
-    Array.from({ length: sharedState.numLayers }, () => 5)
+    Array.from({ length: Math.max(1, sharedState.numLayers - 1) }, () => 5)
   );
+
+  useEffect(() => {
+    const targetLength = Math.max(1, sharedState.numLayers - 1);
+    setSigmas(prev => {
+      if (prev.length === targetLength) return prev;
+      if (prev.length < targetLength) {
+        return [...prev, ...Array.from({ length: targetLength - prev.length }, () => 5)];
+      }
+      return prev.slice(0, targetLength);
+    });
+  }, [sharedState.numLayers]);
 
   const canRun = sharedState.results?.length > 0;
 
@@ -22,7 +33,7 @@ export default function MonteCarloPanel({ sharedState }) {
 
   const handleRun = async () => {
     const layers = [];
-    for (let i = 0; i < sharedState.numLayers; i++) {
+    for (let i = 0; i < sharedState.numLayers - 1; i++) {
       const l = sharedState.layers[i];
       layers.push({ modulus: l.E, poisson: l.nu, thickness: l.is_fixed ? (l.fixed_h || 0) : (l.min_h || 0) });
     }
@@ -100,21 +111,24 @@ export default function MonteCarloPanel({ sharedState }) {
       <div className="grid grid-cols-2 gap-4">
         <div className="border border-gray-200 rounded p-3">
           <h3 className="text-[11px] font-semibold text-gray-700 mb-2">Thickness Uncertainty (sigma, mm)</h3>
-          {Array.from({ length: sharedState.numLayers }, (_, i) => (
-            <div key={i} className="flex items-center gap-2 mb-1">
-              <span className="text-[10px] text-gray-500 w-14">Layer {i + 1}</span>
-              <input
-                type="number"
-                value={sigmas[i] ?? 5}
-                onChange={e => updateSigma(i, e.target.value)}
-                className="w-16 text-[11px] px-2 py-0.5 border border-gray-200 rounded text-center font-mono"
-                min={0}
-                max={50}
-                step={1}
-              />
-              <span className="text-[10px] text-gray-400">mm</span>
-            </div>
-          ))}
+          {Array.from({ length: Math.max(1, sharedState.numLayers - 1) }, (_, i) => {
+            const layerName = sharedState.layers[i]?.name || sharedState.layers[i]?.type || `Layer ${i + 1}`;
+            return (
+              <div key={i} className="flex items-center gap-2 mb-1">
+                <span className="text-[10px] text-gray-500 w-14 truncate" title={layerName}>{layerName}</span>
+                <input
+                  type="number"
+                  value={sigmas[i] ?? 5}
+                  onChange={e => updateSigma(i, e.target.value)}
+                  className="w-16 text-[11px] px-2 py-0.5 border border-gray-200 rounded text-center font-mono"
+                  min={0}
+                  max={50}
+                  step={1}
+                />
+                <span className="text-[10px] text-gray-400">mm</span>
+              </div>
+            );
+          })}
         </div>
         <div className="border border-gray-200 rounded p-3">
           <h3 className="text-[11px] font-semibold text-gray-700 mb-2">Simulation Count</h3>

@@ -7,7 +7,7 @@ IndoPave-37 is a high-performance pavement analysis, structural evaluation, and 
 ## 🌐 Live Web Application
 
 Access the application instantly:
-👉 **[IndoPave-37 Web Interface](https://vkrmbundela.github.io/flex-pave/)**
+👉 **[IndoPave-37 Web Interface](https://vkrmbundela.github.io/IndoPave37/)**
 
 ---
 
@@ -39,7 +39,7 @@ IndoPave-37 employs a deterministic **brute-force search** over constructable (M
 ## 🖥️ How to Use the Web Application
 
 > [!NOTE]
-> For a comprehensive walkthrough of the multi-layer parameters, axle load settings, and advanced analysis tabs (such as 3D Strain Bulbs, Monte Carlo, Geogrids, and CTB spectra), please consult the detailed [IndoPave-37 Usage Guide](file:///e:/Sustainable%20Highway%20Infrastructure%20and%20Retrofitting/New%20IIT%20Pave%20Software/USAGE_GUIDE.md).
+> For a comprehensive walkthrough of the multi-layer parameters, axle load settings, and advanced analysis tabs (such as 3D Strain Bulbs, Monte Carlo, Geogrids, and CTB spectra), please consult the detailed [IndoPave-37 Usage Guide](USAGE_GUIDE.md).
 
 The zero-scroll engineering cockpit is split into interactive control, preview, and results panels:
 

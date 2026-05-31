@@ -74,7 +74,7 @@ async def read_root():
             <div class="card">
                 <h1>IndoPave-37 Backend</h1>
                 <p>The API server is <strong>Online</strong>. To access the interactive engineering dashboard, please visit the official deployment on GitHub Pages.</p>
-                <a href="https://vkrmbundela.github.io/flex-pave/" class="btn">Go to Dashboard</a>
+                <a href="https://vkrmbundela.github.io/IndoPave37/" class="btn">Go to Dashboard</a>
                 <div class="status">v3.4.2 Production API</div>
             </div>
         </body>

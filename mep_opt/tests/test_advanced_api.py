@@ -165,6 +165,21 @@ class TestReserveEndpoint:
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
+    def test_reserve_auto_escalation(self):
+        """Design traffic >= 20.0 msa should auto-escalate R80 -> R90, yielding lower capacity."""
+        payload_base = {
+            "eps_t": 150e-6,
+            "eps_v": 300e-6,
+            "mix_modulus": 1250,
+            "reliability": 80,
+        }
+        resp_low = client.post("/api/v2/reserve", json={**payload_base, "design_msa": 10.0}).json()
+        resp_high = client.post("/api/v2/reserve", json={**payload_base, "design_msa": 20.0}).json()
+        
+        # Under R80, low/high design_msa would have identical intercept_msa.
+        # But because 20.0 msa escalates to R90 (more conservative), its intercept_msa is lower.
+        assert resp_high["intercept_msa"] < resp_low["intercept_msa"]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Module C: Material Library
@@ -299,6 +314,21 @@ class TestSensitivityEndpoint:
         layer_indices = [l["layer_index"] for l in resp.json()["layers"]]
         # Should not include index 4 (subgrade)
         assert 4 not in layer_indices
+
+    @patch.object(sens_mod, "run_bridge_from_stack", side_effect=_fake_bridge)
+    def test_sensitivity_auto_escalation(self, mock_bridge):
+        """Traffic >= 20.0 msa should auto-escalate R80 -> R90, yielding same CDF as R90."""
+        payload_base = {
+            "layers": SAMPLE_LAYERS,
+            "load": SAMPLE_LOAD,
+            "eval_points": SAMPLE_POINTS,
+            "mix_modulus": 1250,
+        }
+        resp_r80 = client.post("/api/v2/sensitivity", json={**payload_base, "cumulative_msa": 20.0, "reliability": 80}).json()
+        resp_r90 = client.post("/api/v2/sensitivity", json={**payload_base, "cumulative_msa": 20.0, "reliability": 90}).json()
+        
+        # With auto-escalation, both resolve to R90 and yield identical CDFs.
+        assert resp_r80["layers"][0]["deltas"][0]["CDF_f"] == resp_r90["layers"][0]["deltas"][0]["CDF_f"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -533,3 +563,20 @@ class TestMonteCarloEndpoint:
         resp2 = client.post("/api/v2/montecarlo", json=payload).json()
         assert resp1["n_adequate"] == resp2["n_adequate"]
         assert resp1["probability_adequate"] == resp2["probability_adequate"]
+
+    @patch.object(mc_mod, "run_bridge_from_stack", side_effect=_fake_bridge)
+    def test_montecarlo_auto_escalation(self, mock_bridge):
+        """Traffic >= 20.0 msa should auto-escalate R80 -> R90, yielding same adequacy as R90."""
+        payload_base = {
+            "layers": SAMPLE_LAYERS,
+            "load": SAMPLE_LOAD,
+            "eval_points": SAMPLE_POINTS,
+            "mix_modulus": 1250,
+            "n_simulations": 15,
+        }
+        resp_r80 = client.post("/api/v2/montecarlo", json={**payload_base, "cumulative_msa": 20.0, "reliability": 80}).json()
+        resp_r90 = client.post("/api/v2/montecarlo", json={**payload_base, "cumulative_msa": 20.0, "reliability": 90}).json()
+        
+        # Both must have resolved to R90, giving identical results.
+        assert resp_r80["probability_adequate"] == resp_r90["probability_adequate"]
+        assert resp_r80["n_adequate"] == resp_r90["n_adequate"]

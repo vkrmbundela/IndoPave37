@@ -54,6 +54,8 @@ def run_monte_carlo(
         raise ValueError("n_simulations must be >= 1")
 
     rel = _RELIABILITY_MAP.get(reliability, ReliabilityLevel.R80)
+    if cumulative_msa >= 20.0 and rel == ReliabilityLevel.R80:
+        rel = ReliabilityLevel.R90
     n_layers = len(layers)
 
     # Default sigmas: 5mm for each non-subgrade layer, 0 for subgrade

@@ -196,11 +196,11 @@ export default function StrainBulbViewer({ sharedState }) {
 
   const handleRun = async () => {
     const layers = [];
-    for (let i = 0; i < sharedState.numLayers; i++) {
+    for (let i = 0; i < sharedState.numLayers - 1; i++) {
       const l = sharedState.layers[i];
-      layers.push({ modulus: l.E, poisson: l.nu, thickness: l.is_fixed ? (l.fixed_h || 0) : (l.min_h || 0) });
+      layers.push({ modulus: l.E, poisson: l.nu, thickness: l.is_fixed ? (l.fixed_h || 0) : (l.min_h || 0), name: l.name || l.type || `Layer ${i + 1}` });
     }
-    layers.push({ modulus: subgradeModulusFromCBR(sharedState.subgradeCbr), poisson: 0.35, thickness: 0 });
+    layers.push({ modulus: subgradeModulusFromCBR(sharedState.subgradeCbr), poisson: 0.35, thickness: 0, name: "Subgrade" });
 
     const resp = await post('/strain-field', {
       layers,

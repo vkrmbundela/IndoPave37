@@ -50,6 +50,8 @@ def compute_sensitivity(
         List of {layer_index, layer_name, deltas: [{delta_mm, CDF_f, CDF_r, eps_t, eps_v}]}
     """
     rel = _RELIABILITY_MAP.get(reliability, ReliabilityLevel.R80)
+    if cumulative_msa >= 20.0 and rel == ReliabilityLevel.R80:
+        rel = ReliabilityLevel.R90
     results = []
 
     # Skip last layer (subgrade — infinite, no thickness to perturb)
