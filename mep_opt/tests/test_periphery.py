@@ -54,6 +54,35 @@ def test_ctsb_crl_have_dedicated_cost_rates():
 
 
 # ---------------------------------------------------------------------------
+# Corridor batch — real IRC moduli, not placeholders
+# ---------------------------------------------------------------------------
+
+def test_corridor_uses_irc_moduli_not_placeholders():
+    """A corridor section must use the real IRC bituminous modulus (2000 MPa,
+    not the old 1250 placeholder) and derive granular modulus from Eq. 7.1
+    (E left None) rather than a flat value."""
+    from mep_opt.advanced.corridor import _run_single_section
+    from mep_opt.solver.materials import get_modulus
+    bc_e = get_modulus("BC", temperature=35.0)
+    assert bc_e == 2000.0     # IRC:37 Table 9.2 VG30 @ 35C, not the 1250 placeholder
+    constraints = [
+        {"layer_type": "BC", "min_thickness": 40, "max_thickness": 50, "fixed_thickness": 40,
+         "E": bc_e, "nu": 0.35, "is_fixed": True},
+        {"layer_type": "DBM", "min_thickness": 50, "max_thickness": 150,
+         "E": get_modulus("DBM", temperature=35.0), "nu": 0.35, "is_fixed": False},
+        {"layer_type": "WMM", "min_thickness": 150, "max_thickness": 300,
+         "E": None, "nu": 0.35, "is_fixed": False},   # granular E via Eq. 7.1
+        {"layer_type": "GSB", "min_thickness": 150, "max_thickness": 300,
+         "E": None, "nu": 0.35, "is_fixed": False},
+    ]
+    sec = {"chainage": "0+000", "cbr": 8.0, "cvpd": 800.0, "vdf": 2.5, "ldf": 0.75}
+    r = _run_single_section(sec, constraints, growth_rate=0.05, design_life=15, reliability=80)
+    assert r["status"] == "ok", f"corridor section failed: {r['status']}"
+    assert len(r["thicknesses"]) == 4 and r["total_thickness"] > 0
+    assert r["cdf_f"] <= 1.0 and r["cdf_r"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
 # Dual-wheel default — protects the corridor batch & direct library callers
 # ---------------------------------------------------------------------------
 

@@ -365,12 +365,20 @@ async def corridor_upload(file: UploadFile = File(...)):
         if not sections:
             raise HTTPException(status_code=400, detail="No valid sections in CSV")
 
-        # Use default layer constraints (will be customizable later)
+        # Default BC/DBM/WMM/GSB constraints with IRC-correct moduli:
+        #   bituminous E from IRC:37-2018 Table 9.2 (VG30 @ 35°C design temp),
+        #   granular E left as None so it is derived from Eq. 7.1 (thickness +
+        #   support) per section — not a flat placeholder.
+        from mep_opt.solver.materials import get_modulus
         default_constraints = [
-            {"layer_type": "BC", "min_thickness": 30, "max_thickness": 50, "E": 1250, "nu": 0.35, "is_fixed": True},
-            {"layer_type": "DBM", "min_thickness": 50, "max_thickness": 200, "E": 1250, "nu": 0.35, "is_fixed": False},
-            {"layer_type": "WMM", "min_thickness": 150, "max_thickness": 300, "E": 300, "nu": 0.35, "is_fixed": False},
-            {"layer_type": "GSB", "min_thickness": 150, "max_thickness": 300, "E": 200, "nu": 0.35, "is_fixed": False},
+            {"layer_type": "BC",  "min_thickness": 40, "max_thickness": 50,  "fixed_thickness": 40,
+             "E": get_modulus("BC", temperature=35.0),  "nu": 0.35, "is_fixed": True},
+            {"layer_type": "DBM", "min_thickness": 50, "max_thickness": 150,
+             "E": get_modulus("DBM", temperature=35.0), "nu": 0.35, "is_fixed": False},
+            {"layer_type": "WMM", "min_thickness": 150, "max_thickness": 300,
+             "E": None, "nu": 0.35, "is_fixed": False},
+            {"layer_type": "GSB", "min_thickness": 150, "max_thickness": 300,
+             "E": None, "nu": 0.35, "is_fixed": False},
         ]
         job_id = await start_corridor_job(sections, default_constraints)
         return {"status": "ok", "job_id": job_id, "total_sections": len(sections)}

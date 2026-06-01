@@ -155,7 +155,13 @@ def _run_single_section(section: dict, layer_constraints: list[dict],
         for c in layer_constraints:
             l_type = c["layer_type"]
             layer_types.append(l_type)
-            layer_props[l_type] = {"E": c["E"], "nu": c["nu"]}
+            # Only pin a custom E when one is supplied. When E is None (e.g. for
+            # unbound granular layers) it is omitted so build_layer_stack derives
+            # the modulus from IRC:37-2018 Eq. 7.1 (thickness + support based)
+            # rather than using a flat placeholder.
+            layer_props[l_type] = {"nu": c["nu"]}
+            if c.get("E") is not None:
+                layer_props[l_type]["E"] = c["E"]
 
             if c.get("is_fixed"):
                 fixed_t = float(
