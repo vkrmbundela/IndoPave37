@@ -34,8 +34,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Optional, Tuple
 
 from mep_opt.solver.irc37 import (
-    AxleLoadGroup, ReliabilityLevel,
-    check_design_adequacy, check_ctb_adequacy,
+    ReliabilityLevel,
+    check_design_adequacy, check_ctb_adequacy, ctb_fatigue_life_strain,
     BituminousLayerInput, GranularLayerInput, build_layer_stack,
 )
 from mep_opt.solver.materials import get_modulus, get_poisson
@@ -162,6 +162,22 @@ class SmartPavementSearch:
                 "set ctb_per_class_bridge_recompute=True to re-run the bridge for each axle class."
             )
 
+        # IRC:37-2018 checks CTB fatigue two ways: the strain-based Eq. 3.5
+        # against design traffic (always run here) AND the stress-ratio
+        # cumulative-damage analysis over the heavy-axle spectrum (Eq. 3.6),
+        # which needs project axle-load data the tool cannot invent.
+        has_ctb = any(
+            str(lt).upper().strip() in CEMENT_TREATED_TYPES
+            for lt in (self.problem.layer_types or [])
+        )
+        if has_ctb and not getattr(self.problem, "ctb_axle_spectrum", None):
+            warnings.append(
+                "CTB fatigue was checked with the strain-based criterion only "
+                "(IRC:37-2018 Eq. 3.5). The complementary stress-ratio cumulative "
+                "damage check (Eq. 3.6) needs an axle-load spectrum - provide "
+                "ctb_axle_spectrum for the full IRC dual check."
+            )
+
         return warnings
 
     def _deadline_passed(self) -> bool:
@@ -194,8 +210,14 @@ class SmartPavementSearch:
 
             if l_type in BITUMINOUS_TYPES:
                 custom_props = (self.problem.layer_props or {}).get(l_type, {})
-                mod = custom_props.get('E', get_modulus(l_type, temperature=temp))
-                nu = custom_props.get('nu', get_poisson(l_type))
+                # An absent key OR an explicit None both mean "auto" — derive
+                # from IRC:37-2018 Table 9.2 at the design temperature.
+                mod = custom_props.get('E')
+                if mod is None:
+                    mod = get_modulus(l_type, temperature=temp)
+                nu = custom_props.get('nu')
+                if nu is None:
+                    nu = get_poisson(l_type)
                 # Carry the project mix volumetrics (Va, Vbe) so the fatigue
                 # C-factor uses the bottom bituminous layer's actual mix
                 # (IRC:37-2018 §3.6.2) rather than a hard-coded default.
@@ -430,18 +452,52 @@ class SmartPavementSearch:
             co2_per_km = None
         moduli = [l['modulus'] for l in solver_stack]
 
-        # CTB fatigue check — uses the SECOND bridge call's σ_t at 0.80 MPa
+        # CTB fatigue check — uses the SECOND bridge call at 0.80 MPa
         # (IRC-compliant) instead of reading from the 0.56 MPa pass. Earlier
         # code conflated the two pressures and under-reported σ_t by ~30–40%.
+        #
+        # IRC:37-2018 requires TWO CTB fatigue checks:
+        #   1. Strain-based Eq. 3.5 against the design traffic (always run —
+        #      this is the primary criterion, previously missing entirely).
+        #   2. Stress-ratio cumulative damage (Eq. 3.6) over the heavy-axle
+        #      spectrum — run only when a spectrum is supplied. The earlier
+        #      no-spectrum fallback applied Eq. 3.6 to the FULL design traffic
+        #      at the standard axle, a construct in neither IRC method; it is
+        #      replaced by the Eq. 3.5 check + an advisory warning.
         ctb_cdf: Optional[float] = None
         ctb_adequate = True
         sigma_t_ctb: Optional[float] = None
+        eps_t_ctb: Optional[float] = None
+        ctb_cdf_strain: Optional[float] = None
+        ctb_nf_strain: Optional[float] = None
         ctb_details: Optional[dict] = None
         if "ctb_bottom" in ctb_idx_map:
             ctb_props = (self.problem.layer_props or {}).get("CTB", {})
             mor = ctb_props.get("MOR", 1.4)  # IRC 37 default modulus of rupture (MPa)
             ctb_rows = [results_ctb[i] for i in ctb_idx_map["ctb_bottom"]]
             sigma_t_ctb = max(abs(r["sigma_t"]) for r in ctb_rows)
+            eps_t_ctb = max(
+                max(abs(r.get("eps_t", 0.0)), abs(r.get("eps_r", 0.0)))
+                for r in ctb_rows
+            )
+
+            # CTB modulus for Eq. 3.5: the solver-stack row whose cumulative
+            # bottom depth equals ctb_depth is the CTB layer itself (the
+            # collapse branch never fires when a cement-treated layer exists,
+            # so granular rows map 1:1).
+            ctb_modulus = 5000.0  # IRC:37-2018 §8.4 design value fallback
+            _cum_depth = 0.0
+            for _row in solver_stack[:-1]:
+                _cum_depth += float(_row.get("thickness", 0.0) or 0.0)
+                if abs(_cum_depth - ctb_depth) < 1e-6:
+                    ctb_modulus = float(_row.get("modulus", ctb_modulus))
+                    break
+
+            # --- Check 1: strain-based Eq. 3.5 vs design traffic ---
+            ctb_nf_strain = ctb_fatigue_life_strain(eps_t_ctb, ctb_modulus, rel)
+            ctb_cdf_strain = (msa * 1e6) / ctb_nf_strain if ctb_nf_strain > 0 else float("inf")
+
+            # --- Check 2: stress-ratio CFD over the axle spectrum (Eq. 3.6) ---
             ctb_spec = list(getattr(self.problem, "ctb_axle_spectrum", None) or [])
             if ctb_spec:
                 if getattr(self.problem, "ctb_per_class_bridge_recompute", False):
@@ -471,14 +527,12 @@ class SmartPavementSearch:
                     ]
                 ctb_check = check_ctb_adequacy(ctb_spec, computed_stresses, mor)
                 ctb_details = ctb_check
-                ctb_cdf = ctb_check["CDF_ctb"]
-                ctb_adequate = ctb_check["ctb_adequate"]
+                # Both IRC checks must pass; report the governing (worst) CDF.
+                ctb_cdf = max(ctb_cdf_strain, ctb_check["CDF_ctb"])
+                ctb_adequate = ctb_check["ctb_adequate"] and ctb_cdf_strain <= 1.0
             else:
-                single_group = [AxleLoadGroup("reference", float(load_standard["load"]) / 1000.0, msa * 1e6)]
-                ctb_check = check_ctb_adequacy(single_group, [sigma_t_ctb], mor)
-                ctb_details = ctb_check
-                ctb_cdf = ctb_check["CDF_ctb"]
-                ctb_adequate = ctb_check["ctb_adequate"]
+                ctb_cdf = ctb_cdf_strain
+                ctb_adequate = ctb_cdf_strain <= 1.0
 
         overall_adequate = bool(chk["overall_adequate"]) and ctb_adequate
 
@@ -497,10 +551,17 @@ class SmartPavementSearch:
             "eps_t": eps_t,
             "eps_v": eps_v,
             "sigma_t_ctb": sigma_t_ctb,
+            "eps_t_ctb": eps_t_ctb,
             "CDF_fatigue": chk["CDF_fatigue"],
             "CDF_rutting": chk["CDF_rutting"],
             "CDF_ctb": ctb_cdf,
+            "CDF_ctb_strain": ctb_cdf_strain,
+            "Nf_ctb_strain": ctb_nf_strain,
             "ctb_details": ctb_details,
+            # Reliability level actually used for the performance equations
+            # (post §3.7 auto-escalation) — consumed by the UI/PDF so the
+            # printed coefficients match the computation.
+            "reliability": rel.name,
             "Nf": chk["Nf"],
             "NR": chk["NR"],
             "overall_adequate": overall_adequate,
@@ -539,12 +600,13 @@ class SmartPavementSearch:
         # The granular block may be a single composite row even when the
         # user defined multiple unbound granular layers.
         n_solver_granular = max(0, len(solver_stack) - 1 - n_bit)
+        poissons = [l.get("poisson", 0.35) for l in solver_stack]
 
         rows: List[dict] = []
         for i, l_type in enumerate(layer_types):
             h = thicknesses[i] if i < len(thicknesses) else 0.0
             if i < n_bit:
-                mod = moduli[i]
+                solver_row = i
             else:
                 # Map logical granular index → solver-stack row.
                 # When collapsed: every granular maps to the single composite row.
@@ -554,12 +616,14 @@ class SmartPavementSearch:
                     solver_row = n_bit
                 else:
                     solver_row = n_bit + granular_logical_idx
-                mod = moduli[solver_row] if solver_row < len(moduli) else moduli[-1]
+            mod = moduli[solver_row] if solver_row < len(moduli) else moduli[-1]
+            nu = poissons[solver_row] if solver_row < len(poissons) else poissons[-1]
             rows.append({
                 "id": i + 1,
                 "name": l_type,
                 "thickness": h,
                 "modulus": mod,
+                "poisson": nu,
             })
         # Subgrade row — always last in solver_stack
         rows.append({
@@ -567,6 +631,7 @@ class SmartPavementSearch:
             "name": "Subgrade",
             "thickness": 0.0,
             "modulus": moduli[-1] if moduli else 0.0,
+            "poisson": poissons[-1] if poissons else 0.35,
         })
         return rows
 
@@ -1200,11 +1265,13 @@ class SmartPavementSearch:
 
         best = archetypes[0]
         warnings = self._build_warnings()
-        # Carry the infeasibility message into the errors list so the API
-        # surfaces it without changing the response schema.
+        # Carry the infeasibility message into the errors list AND the
+        # warnings list. Errors are only returned by the API in debug mode,
+        # so warnings are the channel that reaches the dashboard user.
         result_errors = list(getattr(self, '_errors', None) or [])
         if infeasibility_msg:
             result_errors.insert(0, infeasibility_msg)
+            warnings.insert(0, infeasibility_msg)
 
         return OptimizationResult(
             optimal_thicknesses=best.optimal_thicknesses,

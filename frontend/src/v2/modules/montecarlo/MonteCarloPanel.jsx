@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { Dice5, Play, AlertCircle } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer, Cell } from 'recharts';
 import useAdvancedApi from '../../hooks/useAdvancedApi';
-import { subgradeModulusFromCBR, bottomBituminousModulus, cumulativeMSA } from '../../../lib/irc';
+import { subgradeModulusFromCBR, bottomBituminousModulus, cumulativeMSA, classifyPointRoles } from '../../../lib/irc';
 
 export default function MonteCarloPanel({ sharedState }) {
   const { loading, error, post } = useAdvancedApi();
   const [result, setResult] = useState(null);
+  const [rolesOk, setRolesOk] = useState(true);
   const [nSims, setNSims] = useState(200);
   const [sigmas, setSigmas] = useState(() =>
     Array.from({ length: Math.max(1, sharedState.numLayers - 1) }, () => 5)
@@ -46,6 +47,11 @@ export default function MonteCarloPanel({ sharedState }) {
       points.push({ z: p.z, r: p.r });
     }
 
+    // Depth-based role mapping (see SensitivityHeatmap) — never let the
+    // backend guess which rows are the fatigue / rutting probes.
+    const roles = classifyPointRoles(sharedState.layers, sharedState.numLayers, points);
+    setRolesOk(roles.ok);
+
     // Real cumulative MSA + bottom bituminous modulus (IRC §3.6.2).
     const msa = cumulativeMSA({
       cvpd: sharedState.cvpd, growthRate: sharedState.growthRate,
@@ -72,6 +78,7 @@ export default function MonteCarloPanel({ sharedState }) {
       reliability: sharedState.reliabilityPercent ?? 80,
       air_voids: sharedState.airVoids ?? 3.0,
       bitumen_volume: sharedState.bitumenVolume ?? 11.5,
+      point_roles: roles.ok ? { bit_bottom: roles.bit_bottom, sub_top: roles.sub_top } : undefined,
     });
 
     if (resp?.status === 'ok') setResult(resp);
@@ -104,6 +111,17 @@ export default function MonteCarloPanel({ sharedState }) {
       {!canRun && (
         <div className="flex items-center gap-2 p-3 bg-orange-50 border border-orange-200 rounded text-[11px] text-orange-800">
           <AlertCircle size={13} /> Run Evaluate first to establish baseline design.
+        </div>
+      )}
+
+      {!rolesOk && result && (
+        <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800">
+          <AlertCircle size={13} className="mt-0.5 shrink-0" />
+          <span>
+            The analysis points don't line up with the current layer interfaces, so the legacy
+            row-order assumption was used. Update the point depths to the bituminous bottom and
+            top of subgrade for a reliable adequacy probability.
+          </span>
         </div>
       )}
 

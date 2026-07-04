@@ -7,7 +7,7 @@ import { twMerge } from 'tailwind-merge';
 import AdvancedPanel from './v2/AdvancedPanel';
 import { solveAnalysis, runOptimize, onSolverStatus, getSolverMode } from './lib/solver-client';
 import { useResizableTable } from './lib/useResizableTable';
-import { subgradeModulusFromCBR } from './lib/irc';
+import { subgradeModulusFromCBR, cumulativeMSA, computeGranularAutoE } from './lib/irc';
 import { generatePdfReport } from './lib/pdf-report';
 
 function ColGrip({ rt, i }) {
@@ -115,25 +115,34 @@ function normalizeCtbAxleSpectrum(text) {
   });
 }
 
+// BC/DBM default to the IRC:37-2018 Table 9.2 VG30 @ 35 °C modulus (2000 MPa).
+// The unbound granular layers default to AUTO mode: their E is derived from
+// IRC:37-2018 Eq. 7.1 (with the §7.2.3 composite rule) and re-derived by the
+// optimizer for every candidate thickness — the values below are just seeds
+// that the auto-modulus effect recomputes on load.
 const DEFAULT_LAYERS = [
-  { id: '1', name: 'Layer 1', type: 'BC',  E: 1250,   nu: 0.35, fixed_h: 40,  min_h: 30,  max_h: 50,  is_fixed: true },
-  { id: '2', name: 'Layer 2', type: 'DBM', E: 1250,   nu: 0.35, fixed_h: 120, min_h: 50,  max_h: 250, is_fixed: false },
-  { id: '3', name: 'Layer 3', type: 'WMM', E: 371.37, nu: 0.35, fixed_h: 250, min_h: 150, max_h: 300, is_fixed: true },
-  { id: '4', name: 'Layer 4', type: 'GSB', E: 143.43, nu: 0.35, fixed_h: 250, min_h: 150, max_h: 300, is_fixed: true },
+  { id: '1', name: 'Layer 1', type: 'BC',  E: 2000,   nu: 0.35, fixed_h: 40,  min_h: 30,  max_h: 50,  is_fixed: true },
+  { id: '2', name: 'Layer 2', type: 'DBM', E: 2000,   nu: 0.35, fixed_h: 120, min_h: 50,  max_h: 250, is_fixed: false },
+  { id: '3', name: 'Layer 3', type: 'WMM', E: 181.6,  nu: 0.35, fixed_h: 250, min_h: 150, max_h: 300, is_fixed: true, auto_E: true },
+  { id: '4', name: 'Layer 4', type: 'GSB', E: 181.6,  nu: 0.35, fixed_h: 250, min_h: 150, max_h: 300, is_fixed: true, auto_E: true },
   { id: '5', name: 'Subgrade', type: '', E: 55.4, nu: 0.35, fixed_h: 0, min_h: 0, max_h: 0, is_fixed: true },
 ];
 
 
+// Depths follow the Evaluate convention (fixed layers use fixed_h, range
+// layers use min_h): BC 40 + DBM 50 (min) = 90 mm bituminous bottom;
+// + WMM 250 + GSB 250 = 590 mm top of subgrade. The advanced panels verify
+// these against the live interfaces and warn when they drift.
 const DEFAULT_POINTS = [
-  // Fatigue: bottom of the bituminous bundle (z just inside the AC, above the
-  // 160 mm BC/DBM->granular interface).
-  { z: 159.9, r: 0 },
-  { z: 159.9, r: 155 },
-  // Rutting: TOP OF SUBGRADE. The 660 mm granular->subgrade interface must be
+  // Fatigue: bottom of the bituminous bundle (z just inside the AC, above
+  // the 90 mm BC/DBM->granular interface).
+  { z: 89.9, r: 0 },
+  { z: 89.9, r: 155 },
+  // Rutting: TOP OF SUBGRADE. The 590 mm granular->subgrade interface must be
   // probed from just BELOW (subgrade side) per IRC:37-2018 §3.6.1 — eps_z is
-  // discontinuous there. 659.9 (granular side) under-reports eps_v ~40%.
-  { z: 660.1, r: 0 },
-  { z: 660.1, r: 155 },
+  // discontinuous there; the granular side under-reports eps_v ~40%.
+  { z: 590.1, r: 0 },
+  { z: 590.1, r: 155 },
 ];
 
 const DEMO_CASES = [
@@ -327,7 +336,7 @@ const DEMO_CASES = [
       { id: '1', name: 'BC', E: 3000, nu: 0.35, fixed_h: 40, min_h: 30, max_h: 50, is_fixed: true },
       { id: '2', name: 'DBM', E: 3000, nu: 0.35, fixed_h: 80, min_h: 50, max_h: 250, is_fixed: true },
       { id: '3', name: 'WMM', E: 450, nu: 0.35, fixed_h: 150, min_h: 100, max_h: 250, is_fixed: true },
-      { id: '4', name: 'CTSB', E: 600, nu: 0.35, fixed_h: 150, min_h: 100, max_h: 250, is_fixed: true },
+      { id: '4', name: 'CTSB', E: 600, nu: 0.25, fixed_h: 150, min_h: 100, max_h: 250, is_fixed: true },
       { id: '5', name: 'GSB', E: 150, nu: 0.35, fixed_h: 100, min_h: 100, max_h: 200, is_fixed: true },
       { id: '6', name: 'Subgrade', E: 50, nu: 0.35, fixed_h: 0, min_h: 0, max_h: 0, is_fixed: true },
     ],
@@ -350,7 +359,7 @@ const DEMO_CASES = [
     layers: [
       { id: '1', name: 'BC', E: 3000, nu: 0.35, fixed_h: 40, min_h: 30, max_h: 50, is_fixed: true },
       { id: '2', name: 'DBM', E: 3000, nu: 0.35, fixed_h: 80, min_h: 50, max_h: 250, is_fixed: true },
-      { id: '3', name: 'WMM', E: 450, nu: 0.35, fixed_h: 150, min_h: 100, max_h: 250, is_fixed: true, geogrid: 'Biaxial_PET' },
+      { id: '3', name: 'WMM', E: 450, nu: 0.35, fixed_h: 150, min_h: 100, max_h: 250, is_fixed: true, geogrid: 'PET30' },
       { id: '4', name: 'GSB', E: 150, nu: 0.35, fixed_h: 150, min_h: 100, max_h: 250, is_fixed: true },
       { id: '5', name: 'Subgrade', E: 45, nu: 0.35, fixed_h: 0, min_h: 0, max_h: 0, is_fixed: true },
     ],
@@ -438,12 +447,13 @@ const DEFAULT_CTB_AXLE_SPECTRUM_TEXT = JSON.stringify([
 ], null, 2);
 
 /*
- * Design assumptions used across the main cockpit AND the advanced modules.
- * Keeping them here makes this the single source of truth — when the user
- * changes (or the UI eventually surfaces) any of these, both /api/optimize
- * and every advanced panel see the same values automatically.
+ * INITIAL design assumptions. Growth rate, design life, VDF and LDF are
+ * user-editable in the "Opt Target" panel (state below); these constants
+ * only seed a fresh project. Both /api/optimize and every advanced panel
+ * read the live state values, so they always agree.
  *
- * Defaults follow IRC 37:2018 typical values.
+ * Defaults follow IRC 37:2018 typical values (growth ≥ 5% per §4.2.3;
+ * 20-year design life for NH/SH; LDF 0.75 for dual carriageways).
  */
 const DESIGN_DEFAULTS = {
   growthRate: 0.05,         // 5% per annum
@@ -1073,8 +1083,17 @@ export default function App() {
   // worked example (Va = 3.0 %, Vbe = 11.5 %). Use ?? so an explicit 0 is kept.
   const [airVoids, setAirVoids] = useState(savedData.airVoids ?? 3.0);
   const [bitumenVolume, setBitumenVolume] = useState(savedData.bitumenVolume ?? 11.5);
+  // Traffic assumptions (IRC:37-2018 §4) — previously hard-coded constants;
+  // now user-editable so the design traffic matches the actual project.
+  const [growthRate, setGrowthRate] = useState(savedData.growthRate ?? DESIGN_DEFAULTS.growthRate);
+  const [designLife, setDesignLife] = useState(savedData.designLife ?? DESIGN_DEFAULTS.designLife);
+  const [vdf, setVdf] = useState(savedData.vdf ?? DESIGN_DEFAULTS.vdf);
+  const [ldf, setLdf] = useState(savedData.ldf ?? DESIGN_DEFAULTS.ldf);
 
   const [results, setResults] = useState(savedData.results || null);
+  // Advisory warnings returned by /api/optimize (reliability escalation,
+  // CTB spectrum notes, infeasibility diagnostics) — previously dropped.
+  const [optimizeWarnings, setOptimizeWarnings] = useState(null);
   const [error, setError] = useState(null);
   const [isSolving, setIsSolving] = useState(false);
   const [solverStatus, setSolverStatus] = useState(null);
@@ -1107,6 +1126,7 @@ export default function App() {
       layers, numLayers, load, pressure, wheelType, wheelSpacing, points, numPoints,
       cvpd, subgradeCbr, temperature, airVoids, bitumenVolume, results, optimizationMode,
       optimizedDesigns, hasStarted, previewWidth,
+      growthRate, designLife, vdf, ldf,
       materialRates, showRatesPanel,
       showCtbPanel, useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
       optimizeByCost, optimizeByCo2,
@@ -1116,6 +1136,7 @@ export default function App() {
     layers, numLayers, load, pressure, wheelType, wheelSpacing, points, numPoints,
     cvpd, subgradeCbr, temperature, airVoids, bitumenVolume, results, optimizationMode,
     optimizedDesigns, hasStarted, previewWidth,
+    growthRate, designLife, vdf, ldf,
     materialRates, showRatesPanel, debugMode,
     showCtbPanel, useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
     optimizeByCost, optimizeByCo2,
@@ -1156,6 +1177,28 @@ export default function App() {
       return prev;
     });
   }, [subgradeCbr]);
+
+  // Auto-modulus for granular layers in "Auto (IRC Eq. 7.1)" mode: keep the
+  // displayed E in sync with the current thicknesses and subgrade CBR. This
+  // is the value Evaluate uses; the optimizer re-derives it server-side for
+  // every candidate thickness (E is sent as null for auto layers). Guarded
+  // (returns prev when nothing changed) so the effect settles in one pass.
+  useEffect(() => {
+    setLayers(prev => {
+      const updates = computeGranularAutoE(prev, numLayers, subgradeCbr);
+      if (!updates.length) return prev;
+      let changed = false;
+      const next = prev.map((l, i) => {
+        const u = updates.find(x => x.index === i);
+        if (u && Math.abs(Number(l.E) - u.E) > 0.05) {
+          changed = true;
+          return { ...l, E: u.E };
+        }
+        return l;
+      });
+      return changed ? next : prev;
+    });
+  }, [layers, numLayers, subgradeCbr]);
 
   useEffect(() => {
     setPoints(prev => {
@@ -1206,12 +1249,17 @@ export default function App() {
 
   const doOptimize = async () => {
     setIsSolving(true); setError(null); setOptimizedDesigns(null); setResults(null); setOptimizationMode(true);
+    setOptimizeWarnings(null);
     try {
       const parsedCtbSpectrum = useCtbSpectrum ? normalizeCtbAxleSpectrum(ctbSpectrumText) : null;
       const data = await runOptimize({
         layers: layers.map(l=>({
           layer_type: layerType(l) || l.name,
-          E: l.E,
+          // Auto-mode granular layers send E = null so the engine derives the
+          // modulus from IRC:37-2018 Eq. 7.1 for EVERY candidate thickness
+          // (a pinned number here would freeze the modulus while the
+          // optimizer varies the thickness — non-IRC behaviour).
+          E: (l.auto_E && GRANULAR_LAYER_TYPES.has(layerType(l))) ? null : l.E,
           nu: l.nu,
           is_fixed: l.is_fixed,
           fixed_thickness: l.fixed_h || 0,
@@ -1224,10 +1272,10 @@ export default function App() {
         temperature,
         air_voids: airVoids,
         bitumen_volume: bitumenVolume,
-        growth_rate: DESIGN_DEFAULTS.growthRate,
-        design_life: DESIGN_DEFAULTS.designLife,
-        lane_factor: DESIGN_DEFAULTS.ldf,
-        vdf: DESIGN_DEFAULTS.vdf,
+        growth_rate: growthRate,
+        design_life: designLife,
+        lane_factor: ldf,
+        vdf,
         reliability: `${DESIGN_DEFAULTS.reliabilityPercent}%`,
         wheel_load: load,
         tire_pressure: pressure,
@@ -1247,6 +1295,9 @@ export default function App() {
       setOptimizedDesigns(data.adequate_designs || []);
       setSp72Info(data.sp72 || null);
       setReinforcementInfo(data.reinforcement && data.reinforcement.length ? data.reinforcement : null);
+      // Advisory warnings (reliability auto-escalation, CTB spectrum notes,
+      // infeasibility diagnostics) — surface them instead of dropping them.
+      setOptimizeWarnings(data.warnings && data.warnings.length ? data.warnings : null);
     } catch(e) { setError(e.message); }
     finally { setIsSolving(false); }
   };
@@ -1255,6 +1306,7 @@ export default function App() {
     const cfg = {
       layers, numLayers, load, pressure, wheelType, points, numPoints,
       cvpd, subgradeCbr, temperature, airVoids, bitumenVolume, materialRates, showRatesPanel,
+      growthRate, designLife, vdf, ldf,
       useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
       optimizeByCost, optimizeByCo2,
     };
@@ -1272,20 +1324,28 @@ export default function App() {
       alert('Run the Optimizer first — the PDF report needs at least one design.');
       return;
     }
+    // Was IRC Eq. 7.1 actually in force for this run? Only when every unbound
+    // granular layer was in auto-E mode (the engine skips Eq. 7.1 for layers
+    // with a pinned modulus) — the PDF compliance table must not over-claim.
+    const structural = layers.slice(0, Math.min(numLayers, layers.length) - 1);
+    const unboundGranular = structural.filter(l => GRANULAR_LAYER_TYPES.has(layerType(l)));
+    const granularAutoE = unboundGranular.length > 0 && unboundGranular.every(l => !!l.auto_E);
     try {
       generatePdfReport({
         projectName: `IndoPave-37 — CBR ${subgradeCbr}%, ${cvpd} CVPD`,
         trafficParams: {
           cvpd,
-          growth_rate: DESIGN_DEFAULTS.growthRate,
-          vdf: DESIGN_DEFAULTS.vdf,
-          design_life: DESIGN_DEFAULTS.designLife,
+          growth_rate: growthRate,
+          vdf,
+          ldf,
+          design_life: designLife,
         },
         subgradeCbr,
         selectedSolution: designs[0],
         adequateDesigns: designs,
         airVoids,
         bitumenVolume,
+        granularAutoE,
       });
     } catch (e) {
       alert(`PDF export failed: ${e.message}`);
@@ -1312,6 +1372,10 @@ export default function App() {
         if (hasValue(d.temperature)) setTemperature(d.temperature);
         if (hasValue(d.airVoids)) setAirVoids(d.airVoids);
         if (hasValue(d.bitumenVolume)) setBitumenVolume(d.bitumenVolume);
+        if (hasValue(d.growthRate)) setGrowthRate(d.growthRate);
+        if (hasValue(d.designLife)) setDesignLife(d.designLife);
+        if (hasValue(d.vdf)) setVdf(d.vdf);
+        if (hasValue(d.ldf)) setLdf(d.ldf);
         if (d.materialRates) setMaterialRates(d.materialRates);
         if (hasValue(d.showRatesPanel)) setShowRatesPanel(d.showRatesPanel);
         if (hasValue(d.useCtbSpectrum)) setUseCtbSpectrum(d.useCtbSpectrum);
@@ -1609,7 +1673,10 @@ export default function App() {
                                       if (ePristine) updates.E = mat.default_E;
                                       if (nuPristine) updates.nu = mat.default_nu;
                                     }
-                                    if (!GRANULAR_LAYER_TYPES.has(v)) updates.geogrid = null;
+                                    if (!GRANULAR_LAYER_TYPES.has(v)) {
+                                      updates.geogrid = null;
+                                      updates.auto_E = false; // Eq. 7.1 applies to unbound granular only
+                                    }
                                     return updates;
                                   }));
                                 }}
@@ -1668,10 +1735,28 @@ export default function App() {
                             type="number"
                             value={l.E}
                             onChange={e=>updateLayer(i,'E',Number(e.target.value))}
-                            disabled={sub}
-                            title={sub ? "Determined by Subgrade CBR (%) in Opt Target" : ""}
-                            className={cn(inp,"w-20", sub && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
+                            disabled={sub || !!l.auto_E}
+                            title={sub ? "Determined by Subgrade CBR (%) in Opt Target"
+                              : l.auto_E ? "Auto — derived from IRC:37-2018 Eq. 7.1 (0.2·h^0.45·E_support); the optimizer re-derives it for every candidate thickness"
+                              : ""}
+                            className={cn(inp,"w-20", (sub || l.auto_E) && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
                           />
+                          {!sub && GRANULAR_LAYER_TYPES.has(layerType(l)) && (
+                            <label
+                              className="mt-0.5 flex items-center gap-1 cursor-pointer select-none"
+                              title="Auto: derive this granular modulus from IRC:37-2018 Eq. 7.1 (and the §7.2.3 composite rule). Recommended — a pinned E stays constant while the optimizer varies the thickness, which deviates from IRC."
+                            >
+                              <input
+                                type="checkbox"
+                                checked={!!l.auto_E}
+                                onChange={e=>updateLayer(i,'auto_E', e.target.checked)}
+                                className="h-2.5 w-2.5 accent-orange-600 cursor-pointer"
+                              />
+                              <span className={cn("text-[9px] font-bold uppercase", l.auto_E ? "text-orange-700" : "text-slate-400")}>
+                                Auto Eq. 7.1
+                              </span>
+                            </label>
+                          )}
                         </td>
                         <td className="py-0.5 px-1">
                           <input
@@ -1796,25 +1881,53 @@ export default function App() {
               </fieldset>
 
               {/* Optimization Target */}
-              <fieldset className="border border-gray-200 rounded px-2 pt-0.5 pb-1.5 w-40 flex-none">
-                <legend className="text-[10px] font-bold uppercase text-gray-400 tracking-wide px-1">Opt Target</legend>
-                <div className="flex flex-col gap-1">
+              <fieldset className="border border-gray-200 rounded px-2 pt-0.5 pb-1.5 w-56 flex-none">
+                <legend className="text-[10px] font-bold uppercase text-gray-400 tracking-wide px-1">Opt Target · Traffic</legend>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-1">
                   <div className="flex items-center gap-1.5">
                     <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">CVPD</label>
-                    <input type="number" value={cvpd} onChange={e=>setCvpd(Number(e.target.value))} className={cn(inp,"flex-1 py-0")}/>
+                    <input type="number" value={cvpd} onChange={e=>setCvpd(Number(e.target.value))} className={cn(inp,"flex-1 py-0 min-w-0")}/>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">CBR %</label>
-                    <input type="number" value={subgradeCbr} onChange={e=>setSubgradeCbr(Number(e.target.value))} className={cn(inp,"flex-1 py-0")}/>
+                    <input type="number" value={subgradeCbr} onChange={e=>setSubgradeCbr(Number(e.target.value))} className={cn(inp,"flex-1 py-0 min-w-0")}/>
+                  </div>
+                  <div className="flex items-center gap-1.5" title="Annual traffic growth rate, % (IRC:37-2018 §4.2.3 recommends at least 5%).">
+                    <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">Grw %</label>
+                    <input type="number" step="0.5" min="-5" max="20" value={Math.round(growthRate*1000)/10} onChange={e=>setGrowthRate(Number(e.target.value)/100)} className={cn(inp,"flex-1 py-0 min-w-0")}/>
+                  </div>
+                  <div className="flex items-center gap-1.5" title="Design life in years (IRC:37-2018 §4.2.2 — typically 20 for NH/SH).">
+                    <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">Life yr</label>
+                    <input type="number" step="1" min="1" max="40" value={designLife} onChange={e=>setDesignLife(Number(e.target.value))} className={cn(inp,"flex-1 py-0 min-w-0")}/>
+                  </div>
+                  <div className="flex items-center gap-1.5" title="Vehicle Damage Factor — standard axles per commercial vehicle (IRC:37-2018 §4.4).">
+                    <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">VDF</label>
+                    <input type="number" step="0.1" min="0.1" max="12" value={vdf} onChange={e=>setVdf(Number(e.target.value))} className={cn(inp,"flex-1 py-0 min-w-0")}/>
+                  </div>
+                  <div className="flex items-center gap-1.5" title="Lane Distribution Factor (IRC:37-2018 §4.5 — 0.75 for dual carriageway with two lanes each way).">
+                    <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">LDF</label>
+                    <input type="number" step="0.05" min="0.05" max="1" value={ldf} onChange={e=>setLdf(Number(e.target.value))} className={cn(inp,"flex-1 py-0 min-w-0")}/>
                   </div>
                   <div className="flex items-center gap-1.5" title="Air voids of the bottom bituminous mix (IRC:37-2018 §3.6.2 fatigue C-factor). IRC Annex-II example uses 3%.">
                     <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">Va %</label>
-                    <input type="number" step="0.5" min="1" max="12" value={airVoids} onChange={e=>setAirVoids(Number(e.target.value))} className={cn(inp,"flex-1 py-0")}/>
+                    <input type="number" step="0.5" min="1" max="12" value={airVoids} onChange={e=>setAirVoids(Number(e.target.value))} className={cn(inp,"flex-1 py-0 min-w-0")}/>
                   </div>
                   <div className="flex items-center gap-1.5" title="Effective bitumen volume of the bottom bituminous mix (IRC:37-2018 §3.6.2 fatigue C-factor). IRC Annex-II example uses 11.5%.">
                     <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">Vbe %</label>
-                    <input type="number" step="0.5" min="5" max="20" value={bitumenVolume} onChange={e=>setBitumenVolume(Number(e.target.value))} className={cn(inp,"flex-1 py-0")}/>
+                    <input type="number" step="0.5" min="5" max="20" value={bitumenVolume} onChange={e=>setBitumenVolume(Number(e.target.value))} className={cn(inp,"flex-1 py-0 min-w-0")}/>
                   </div>
+                </div>
+                <div
+                  className="mt-1 flex items-center justify-between rounded bg-orange-50/60 border border-orange-100 px-1.5 py-0.5"
+                  title="Cumulative design traffic N = 365·CVPD·LDF·VDF·((1+r)^n − 1)/r (IRC:37-2018 §4). Reliability auto-escalates R80→R90 at 20 MSA per §3.7."
+                >
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-orange-700">Design Traffic</span>
+                  <span className="text-[10px] font-mono font-bold text-orange-900">
+                    {cumulativeMSA({ cvpd, growthRate, designLife, ldf, vdf }).toFixed(1)} MSA
+                    {cumulativeMSA({ cvpd, growthRate, designLife, ldf, vdf }) >= 20 ? ' · R90' : ' · R80'}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1 mt-0.5">
                   <div className="flex items-center gap-1.5 border-t border-gray-100 pt-1 mt-0.5">
                     <input
                       type="checkbox"
@@ -1974,10 +2087,22 @@ export default function App() {
                 {/* Geosynthetic reinforcement badge */}
                 {reinforcementInfo && (
                   <div className="mb-2 text-[11px] rounded border border-emerald-200 bg-emerald-50 text-emerald-900 px-2.5 py-1.5">
-                    <span className="font-bold uppercase tracking-wide mr-1">Geosynthetic (IRC:SP:59 / MIF)</span>
+                    <span className="font-bold uppercase tracking-wide mr-1">Geosynthetic (MIF, after IRC:SP:59 intent)</span>
                     {reinforcementInfo.map((r,ri)=>(
                       <span key={ri} className="mr-2">{r.layer} + {r.geogrid} → modulus ×{r.mif}</span>
                     ))}
+                  </div>
+                )}
+                {/* Engine advisory warnings — reliability auto-escalation,
+                    CTB spectrum notes, infeasibility diagnostics. */}
+                {optimizeWarnings && optimizeWarnings.length > 0 && (
+                  <div className="mb-2 text-[11px] rounded border border-yellow-300 bg-yellow-50 text-yellow-900 px-2.5 py-1.5">
+                    <div className="font-bold uppercase tracking-wide mb-0.5 flex items-center gap-1">
+                      <AlertCircle size={11}/> Engine Advisories
+                    </div>
+                    <ul className="list-disc ml-4 space-y-0.5">
+                      {optimizeWarnings.map((w, wi) => <li key={wi}>{w}</li>)}
+                    </ul>
                   </div>
                 )}
                 <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-2">Pareto-Optimal Designs</div>
@@ -2060,15 +2185,38 @@ export default function App() {
                                   />
                                 </div>
                               </div>
+                              {/* CTB fatigue — gates adequacy for semi-rigid sections,
+                                  so it must be visible whenever it was computed. */}
+                              {d.details?.CDF_ctb != null && (
+                                <div className="flex flex-col col-span-2" title="Governing CTB fatigue damage: strain-based IRC:37-2018 Eq. 3.5 vs design traffic; when an axle spectrum is supplied, also the stress-ratio CFD (Eq. 3.6) — the worse of the two is shown.">
+                                  <div className="flex justify-between items-center mb-0.5">
+                                    <span className="text-[9px] text-gray-500 font-bold uppercase">CTB Fatigue (σ_t/ε_t)</span>
+                                    <span className={`text-[9px] font-bold ${(d.details?.CDF_ctb > 0.9) ? 'text-red-600' : 'text-green-600'}`}>
+                                      {(d.details.CDF_ctb * 100).toFixed(1) + '%'}
+                                    </span>
+                                  </div>
+                                  <div className="h-1 bg-gray-200 rounded-full overflow-hidden">
+                                    <div
+                                      className={`h-full transition-all duration-300 ${(d.details?.CDF_ctb > 0.9) ? 'bg-red-500' : 'bg-green-500'}`}
+                                      style={{ width: `${Math.min(100, (d.details?.CDF_ctb || 0) * 100)}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              )}
                             </div>
 
                             {/* Meta & Governing */}
                             <div className="flex justify-between items-center space-x-2">
-                               <div className="bg-gray-100 rounded px-1.5 py-0.5 flex items-center gap-1 group">
+                               <div className="bg-gray-100 rounded px-1.5 py-0.5 flex items-center gap-1 group" title={`Design traffic (checked at ${d.details?.reliability || 'IRC'} reliability)`}>
                                   <Zap size={10} className="text-orange-500"/>
-                                  <span className="text-[9px] font-bold text-gray-600 uppercase tracking-tighter">Traffic: {d.details?.msa != null ? d.details.msa.toFixed(1) : '--'} MSA</span>
+                                  <span className="text-[9px] font-bold text-gray-600 uppercase tracking-tighter">
+                                    {d.details?.msa != null ? d.details.msa.toFixed(1) : '--'} MSA{d.details?.reliability ? ` · ${d.details.reliability}` : ''}
+                                  </span>
                                </div>
-                               <div className={`rounded px-1.5 py-0.5 flex items-center gap-1 border ${d.details?.governing_mode === 'fatigue' ? 'bg-orange-50 border-orange-200 text-orange-700' : 'bg-blue-50 border-blue-200 text-blue-700'}`}>
+                               <div className={`rounded px-1.5 py-0.5 flex items-center gap-1 border ${
+                                  d.details?.governing_mode === 'fatigue' ? 'bg-orange-50 border-orange-200 text-orange-700' :
+                                  d.details?.governing_mode === 'ctb' ? 'bg-violet-50 border-violet-200 text-violet-700' :
+                                  'bg-blue-50 border-blue-200 text-blue-700'}`}>
                                   <AlertCircle size={10} />
                                   <span className="text-[9px] font-bold uppercase italic">{d.details?.governing_mode} governed</span>
                                </div>
@@ -2093,7 +2241,16 @@ export default function App() {
                         </div>
                       ))}
                     </div>
-                ):<div className="text-red-600 text-xs">No feasible designs. Relax constraints.</div>}
+                ):(
+                  <div className="text-xs rounded border border-red-200 bg-red-50 text-red-800 px-2.5 py-2">
+                    <div className="font-bold mb-0.5">No IRC-adequate design within the current bounds.</div>
+                    <div className="text-red-700">
+                      The engine diagnostics above (if shown) name the governing failure mode and the closest-to-passing
+                      CDF. Typical remedies: raise the layer max-thickness bounds, revisit the subgrade CBR, or revisit
+                      the traffic inputs (CVPD / VDF / growth / design life).
+                    </div>
+                  </div>
+                )}
               </div>
             ) : !optimizationMode && results ? (
               <table className="w-full min-w-[980px] text-[11px] text-left font-mono border-collapse leading-5">
@@ -2235,8 +2392,9 @@ export default function App() {
                       </p>
                       <ul className="list-disc ml-5 space-y-1.5 mb-3 text-[11px]">
                         <li><strong>Header Toolbar:</strong> Main application triggers, use cases loading, Advanced panels, and project Import/Export.</li>
-                        <li><strong>Left Settings Panel:</strong> Environment parameters, Design Traffic (MSA), Subgrade CBR (%), VG VG-grades temperature indices, and Axle parameters.</li>
-                        <li><strong>Middle Layers Grid:</strong> Interactive physical layers configurator. Set moduli, Poisson's, thickness limits, costs, and carbon indices.</li>
+                        <li><strong>Layer Structure Grid:</strong> Interactive layer configurator — material type, moduli (with "Auto Eq. 7.1" mode for unbound granular layers), Poisson's ratio, and thickness limits.</li>
+                        <li><strong>Opt Target · Traffic Panel:</strong> CVPD, Subgrade CBR (%), traffic growth, design life, VDF, LDF, and the mix volumetrics Va/Vbe — with the live cumulative design traffic (MSA) readout.</li>
+                        <li><strong>Load Config Panel:</strong> Wheel load, tyre pressure, single/dual wheel, and dual spacing.</li>
                         <li><strong>Right CAD Visualizer:</strong> Live SVG schematic displaying layer thicknesses, wheel loading config, stress dissipation bulbs, and interactive analysis points.</li>
                       </ul>
                     </div>
@@ -2332,8 +2490,8 @@ export default function App() {
                           <span>Passed (error &lt; 1.2%)</span>
                         </div>
                         <div className="flex justify-between">
-                          <span>• TIHAN1 (Corridor Spectrum)</span>
-                          <span>Passed (error &lt; 1.5%)</span>
+                          <span>• IRC:37-2018 Annex-II (II.3 / II.4)</span>
+                          <span>Passed (ε_t 146 vs 146 µε; σ_t 0.699 vs 0.700 MPa)</span>
                         </div>
                       </div>
                     </div>
@@ -2433,14 +2591,14 @@ export default function App() {
                         <div className="border-b border-[var(--hairline)] pb-3">
                           <h4 className="font-bold text-[var(--text-bold)] text-[11px] mb-1">🕸️ Geosynthetic Base Reinforcement (Geogrids)</h4>
                           <p className="text-[11px]">
-                            Enables geogrid interlayers (biaxial or triaxial) inside granular bases. Applies a **Modulus Improvement Factor (MIF)** (ranging from 1.5x to 2.0x) to granular sub-bases, allowing thinner structural thickness while maintaining design life.
+                            Enables geogrid interlayers inside granular bases. Applies a **Modulus Improvement Factor (MIF)** of ~1.5× to ~3.5× depending on geogrid type and subgrade modulus (Saride et al. 2021 — a research method aligned with the IRC:SP:59 intent, not an IRC:37 table), allowing thinner structural thickness while maintaining design life.
                           </p>
                         </div>
 
                         <div>
                           <h4 className="font-bold text-[var(--text-bold)] text-[11px] mb-1">🚒 Cement Treated Base (CTB) Axle Spectrum Analysis</h4>
                           <p className="text-[11px]">
-                            Enables damage evaluation for Cement Treated Bases using fatigue damage accumulation ($CFD \le 1.0$). Solves fatigue distress ratios against the CTB Modulus of Rupture ($M_R \approx 1.4$ MPa) across a full axle load spectrum array.
+                            CTB fatigue is always checked with the strain-based IRC:37-2018 Eq. 3.5 criterion against the design traffic. Supplying an axle load spectrum additionally runs the stress-ratio cumulative damage analysis (Eq. 3.6, $CFD \le 1.0$) against the CTB Modulus of Rupture ($M_{rup} = 1.4$ MPa) — the worse of the two governs.
                           </p>
                         </div>
                       </div>
@@ -2471,11 +2629,12 @@ export default function App() {
             temperature, points, numPoints, cvpd, subgradeCbr,
             airVoids, bitumenVolume,
             results, optimizedDesigns, materialRates,
-            // Single source of truth for design assumptions used by every advanced module
-            growthRate: DESIGN_DEFAULTS.growthRate,
-            designLife: DESIGN_DEFAULTS.designLife,
-            ldf: DESIGN_DEFAULTS.ldf,
-            vdf: DESIGN_DEFAULTS.vdf,
+            // Single source of truth for design assumptions used by every
+            // advanced module — the SAME editable state /api/optimize uses.
+            growthRate,
+            designLife,
+            ldf,
+            vdf,
             reliabilityPercent: DESIGN_DEFAULTS.reliabilityPercent,
           }}
           onClose={() => setShowAdvanced(false)}

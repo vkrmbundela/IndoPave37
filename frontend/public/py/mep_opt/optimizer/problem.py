@@ -128,11 +128,12 @@ class OptimizationProblem:
     traffic_tier_minimums: Optional[Tuple] = None
     ignore_minimum_thickness: bool = False
 
-    # Cost and CO₂ are ALWAYS computed for every design and ALWAYS returned
-    # (the Economy and Sustainable archetypes depend on them). These toggles
-    # now only influence the order in which combinations are evaluated
-    # (cost-ascending when optimize_by_cost=True, else thickness-ascending),
-    # which matters solely if a wall-clock deadline truncates the search.
+    # Cost / CO₂ objectives. When BOTH are False the optimizer selects only
+    # the Structural archetype (thinnest adequate design) and never runs the
+    # cost estimator — cost_per_km / co2_per_km stay None. Enabling
+    # optimize_by_cost adds the Economy archetype (and sorts the brute-force
+    # order by ₹/km); optimize_by_co2 adds Sustainable; enabling both also
+    # adds the Premium combined optimum.
     optimize_by_cost: bool = False
     optimize_by_co2: bool = False
 

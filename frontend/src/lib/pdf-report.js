@@ -191,7 +191,12 @@ function designBasis(doc, traffic, cbr, sol, mix) {
     ['Dual-wheel spacing (c/c)', '310 mm', ''],
     ['Layer interface', 'fully bonded', 'Sec 3.6.1'],
   ]);
-  const rel = msa >= 20 ? '90% (mandatory >= 20 MSA)' : '80% (low-volume, < 20 MSA)';
+  // Prefer the reliability the ENGINE actually used (post §3.7 escalation,
+  // reported on the solution details); fall back to the MSA heuristic.
+  const relUsed = d.reliability || (msa >= 20 ? 'R90' : 'R80');
+  const rel = relUsed === 'R90'
+    ? '90% (mandatory >= 20 MSA)'
+    : '80% (low-volume, < 20 MSA)';
   y = sectionHeading(doc, y, 'Reliability & Mix', 'IRC:37-2018 Sec 3.7, 3.6.2');
   const va = num(mix?.airVoids, num(d.air_voids, 3));
   const vbe = num(mix?.bitumenVolume, num(d.bitumen_volume, 11.5));
@@ -203,21 +208,26 @@ function designBasis(doc, traffic, cbr, sol, mix) {
 }
 
 // ---- Composition + cross-section ----
-function composition(doc, sol) {
+function composition(doc, sol, granularAutoE) {
   let y = 24;
   doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(...INK);
   doc.text('2.  Pavement Composition', M, y); y += 8;
   const d = sol.details || {};
   const rich = d.layers && d.layers.length
-    ? d.layers.map((l) => ({ name: l.name, thickness: num(l.thickness), modulus: num(l.modulus) }))
-    : (sol.optimal_layers || []).map((l) => ({ name: l.type, thickness: num(l.thickness), modulus: null }));
+    ? d.layers.map((l) => ({ name: l.name, thickness: num(l.thickness), modulus: num(l.modulus), poisson: l.poisson }))
+    : (sol.optimal_layers || []).map((l) => ({ name: l.type, thickness: num(l.thickness), modulus: null, poisson: null }));
   const nuMap = { CTB: '0.25', CTSB: '0.25' };
   const body = []; let crust = 0;
   rich.forEach((l, i) => {
     const sub = String(l.name).toLowerCase().startsWith('sub');
     if (!sub) crust += l.thickness;
+    // Prefer the engine-reported Poisson ratio; only fall back to the IRC
+    // defaults when the backend didn't include it (older responses).
+    const nuShown = Number.isFinite(Number(l.poisson)) && Number(l.poisson) > 0
+      ? Number(l.poisson).toFixed(2)
+      : (nuMap[String(l.name).toUpperCase()] || '0.35');
     body.push([sub ? '--' : String(i + 1), l.name, sub || !l.thickness ? 'inf (half-space)' : l.thickness.toFixed(0),
-      l.modulus ? l.modulus.toFixed(0) : '--', nuMap[String(l.name).toUpperCase()] || '0.35']);
+      l.modulus ? l.modulus.toFixed(0) : '--', nuShown]);
   });
   body.push(['', 'Total bound + unbound crust', crust.toFixed(0), '', '']);
   autoTable(doc, {
@@ -231,7 +241,11 @@ function composition(doc, sol) {
   });
   y = doc.lastAutoTable.finalY + 3;
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7.4); doc.setTextColor(...MUTED);
-  doc.text(doc.splitTextToSize('Granular moduli from IRC:37-2018 Eq. 7.1 (0.2.h^0.45.MR_support); unbound base + sub-base combined per Sec 7.2.3.', CONTENT_W), M, y);
+  doc.text(doc.splitTextToSize(
+    granularAutoE
+      ? 'Granular moduli from IRC:37-2018 Eq. 7.1 (0.2.h^0.45.MR_support); unbound base + sub-base combined per Sec 7.2.3.'
+      : 'Granular moduli are USER-SPECIFIED (Auto Eq. 7.1 mode was off) - IRC:37-2018 Eq. 7.1 / Sec 7.2.3 derivation was NOT applied; verify the pinned values against project material testing.',
+    CONTENT_W), M, y);
   y += 8;
 
   // Cross-section
@@ -290,9 +304,18 @@ function compliance(doc, sol) {
   doc.text(doc.splitTextToSize(`Design repetitions N_applied = ${msa.toFixed(2)} x 10^6 standard axles. A criterion passes when CDF = N_applied / N_allowable <= 1.0.`, CONTENT_W), M, y);
   y += 9;
 
+  // Reliability the engine actually used (post §3.7 auto-escalation) — the
+  // printed coefficients must match the computation, not always the R90 row.
+  const relUsed = d.reliability || (msa >= 20 ? 'R90' : 'R80');
+  const rutCoeff = relUsed === 'R90' ? '1.41 x 10^-8' : '4.1656 x 10^-8';
+  const fatCoeff = relUsed === 'R90' ? '0.5161' : '1.6064';
+  const relPct = relUsed === 'R90' ? '90%' : '80%';
+
   const cdfR = num(d.CDF_rutting), nr = num(d.NR);
-  y = criterion(doc, y, 'Subgrade Rutting', 'IRC:37 Sec 3.6.1 - Eq 3.1/3.2',
-    'N_R = 1.41 x 10^-8 . (1/ev)^4.5337   (90% reliability; ev = vertical compressive strain at top of subgrade)',
+  // NOTE: in IRC:37-2018, Eq. 3.1/3.2 are the FATIGUE models and Eq. 3.3/3.4
+  // are the RUTTING models (an earlier report revision had them swapped).
+  y = criterion(doc, y, 'Subgrade Rutting', 'IRC:37 Sec 3.6.1 - Eq 3.3/3.4',
+    `N_R = ${rutCoeff} . (1/ev)^4.5337   (${relPct} reliability; ev = vertical compressive strain at top of subgrade)`,
     [['Quantity', 'Computed', 'Allowable', 'CDF (<=1.0)'],
      ['ev (top of subgrade)', ue(d.eps_v), ue(allowableStrain(d.eps_v, cdfR, RUT_EXP)), ''],
      ['N_R (allowable reps)', nr.toExponential(2), `>= ${nApp.toExponential(2)}`, cdfR.toFixed(3)]],
@@ -300,20 +323,30 @@ function compliance(doc, sol) {
 
   if (Math.abs(num(d.eps_t)) > 1e-12) {
     const cdfF = num(d.CDF_fatigue), nf = num(d.Nf);
-    y = criterion(doc, y, 'Bituminous Fatigue Cracking', 'IRC:37 Sec 3.6.2 - Eq 3.3/3.4',
-      'N_f = 0.5161 . C . 10^-4 . (1/et)^3.89 . (1/MRm)^0.854   (et at bottom of the bottom bituminous layer)',
+    y = criterion(doc, y, 'Bituminous Fatigue Cracking', 'IRC:37 Sec 3.6.2 - Eq 3.1/3.2',
+      `N_f = ${fatCoeff} . C . 10^-4 . (1/et)^3.89 . (1/MRm)^0.854   (${relPct} reliability; et at bottom of the bottom bituminous layer)`,
       [['Quantity', 'Computed', 'Allowable', 'CDF (<=1.0)'],
        ['et (bottom of bound layer)', ue(d.eps_t), ue(allowableStrain(d.eps_t, cdfF, FAT_EXP)), ''],
        ['N_f (allowable reps)', nf.toExponential(2), `>= ${nApp.toExponential(2)}`, cdfF.toFixed(3)]],
       cdfF <= 1.0);
   }
-  if (d.CDF_ctb != null && d.sigma_t_ctb != null) {
+  if (d.CDF_ctb != null) {
     const cdfC = num(d.CDF_ctb);
-    y = criterion(doc, y, 'Cement-Treated Base (CTB) Fatigue', 'IRC:37 Sec 3.6 - Eq 3.6',
-      'N = 10^((0.972 - SR)/0.0825)   SR = sigma_t / MRup; sigma_t at bottom of CTB at 0.80 MPa',
-      [['Quantity', 'Computed', 'Limit', 'CDF (<=1.0)'],
-       ['sigma_t (bottom of CTB)', `${Math.abs(num(d.sigma_t_ctb)).toFixed(3)} MPa`, '--', ''],
-       ['Cumulative fatigue damage', '', '<= 1.0', cdfC.toFixed(3)]],
+    const cdfCs = d.CDF_ctb_strain != null ? num(d.CDF_ctb_strain) : null;
+    const hasSpectrum = !!(d.ctb_details && d.ctb_details.details && d.ctb_details.details.length);
+    const rf = relUsed === 'R90' ? '1' : '2';
+    const rows = [['Quantity', 'Computed', 'Limit', 'CDF (<=1.0)']];
+    if (d.eps_t_ctb != null) rows.push(['et (bottom of CTB, 0.80 MPa)', ue(d.eps_t_ctb), '--', '']);
+    if (d.sigma_t_ctb != null) rows.push(['sigma_t (bottom of CTB, 0.80 MPa)', `${Math.abs(num(d.sigma_t_ctb)).toFixed(3)} MPa`, '--', '']);
+    if (cdfCs != null) rows.push(['Strain criterion (Eq 3.5)', '', '<= 1.0', cdfCs.toFixed(3)]);
+    if (hasSpectrum) rows.push(['Stress-ratio CFD over spectrum (Eq 3.6)', '', '<= 1.0', num(d.ctb_details.CDF_ctb).toFixed(3)]);
+    rows.push(['Governing CTB fatigue damage', '', '<= 1.0', cdfC.toFixed(3)]);
+    y = criterion(doc, y, 'Cement-Treated Base (CTB) Fatigue', 'IRC:37 Sec 3.5 - Eq 3.5' + (hasSpectrum ? ' & 3.6' : ''),
+      `N = RF.[(113000/E^0.804 + 191)/et]^12 with RF = ${rf} (${relPct} reliability)` +
+      (hasSpectrum
+        ? '; plus N = 10^((0.972 - SR)/0.0825), SR = sigma_t/MRup, over the axle spectrum'
+        : '   (stress-ratio spectrum check not run - no axle spectrum supplied)'),
+      rows,
       cdfC <= 1.0);
   }
   const ok = !!d.overall_adequate;
@@ -324,28 +357,44 @@ function compliance(doc, sol) {
               : 'OVERALL: NOT ADEQUATE - revise layer thicknesses or materials.', M + 3, y + 5.6);
 }
 
-function clausesAndAlternatives(doc, sol, designs) {
+function clausesAndAlternatives(doc, sol, designs, granularAutoE) {
   let y = 24;
   doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(...INK);
   doc.text('4.  IRC:37 Clause Compliance', M, y); y += 8;
   const hasCtb = (sol.details || {}).CDF_ctb != null;
+  const hasSpectrum = !!((sol.details || {}).ctb_details && sol.details.ctb_details.details && sol.details.ctb_details.details.length);
+  // Each item: [status, text, clause]. Status 'OK' only when the analysis
+  // actually honoured the clause for THIS run — never claim Eq. 7.1 when the
+  // user pinned the granular moduli manually.
   const items = [
-    ['Standard axle: dual wheels, 2 x 20 kN at 0.56 MPa, 310 mm c/c', 'Sec 3.6.1'],
-    ['ev evaluated at the top of the subgrade (rutting)', 'Sec 3.6.1'],
-    ['et evaluated at the bottom of the bottom bituminous layer (fatigue)', 'Sec 3.6.2'],
-    ['Subgrade MRS from Eq. 6.1/6.2, capped at 100 MPa', 'Sec 6.3 / Cl 6.4.2'],
-    ['Granular modulus from Eq. 7.1; unbound base+sub-base combined', 'Sec 7.2.3'],
-    ['Reliability auto-set: 90% for >= 20 MSA, else 80%', 'Sec 3.7'],
-    ['All cumulative damage factors checked against the 1.0 limit', 'Sec 3.6'],
+    ['OK', 'Standard axle: dual wheels, 2 x 20 kN at 0.56 MPa, 310 mm c/c', 'Sec 3.6.1'],
+    ['OK', 'ev evaluated at the top of the subgrade (rutting)', 'Sec 3.6.1'],
+    ['OK', 'et evaluated at the bottom of the bottom bituminous layer (fatigue)', 'Sec 3.6.2'],
+    ['OK', 'Subgrade MRS from Eq. 6.1/6.2, capped at 100 MPa', 'Sec 6.3 / Cl 6.4.2'],
+    granularAutoE
+      ? ['OK', 'Granular modulus from Eq. 7.1; unbound base+sub-base combined', 'Sec 7.2.3']
+      : ['N/A', 'Granular moduli USER-SPECIFIED (Auto Eq. 7.1 off) - Eq. 7.1 / Sec 7.2.3 not applied; justify pinned values from material testing', 'Sec 7.2.3'],
+    ['OK', 'Reliability auto-set: 90% for >= 20 MSA, else 80%', 'Sec 3.7'],
+    ['OK', 'All cumulative damage factors checked against the 1.0 limit', 'Sec 3.6'],
   ];
-  if (hasCtb) items.push(['CTB tensile stress at 0.80 MPa; crack-relief layer above CTB', 'Sec 3.6 / 8.3']);
+  if (hasCtb) {
+    items.push(['OK', 'CTB strain fatigue (Eq. 3.5) at 0.80 MPa; crack-relief layer above CTB', 'Sec 3.5 / 8.3']);
+    items.push(hasSpectrum
+      ? ['OK', 'CTB stress-ratio cumulative damage over the supplied axle spectrum (Eq. 3.6)', 'Sec 3.5']
+      : ['N/A', 'CTB stress-ratio spectrum check (Eq. 3.6) NOT run - supply an axle-load spectrum for the full IRC dual check', 'Sec 3.5']);
+  }
   autoTable(doc, {
     startY: y, margin: { left: M, right: M },
-    head: [['', 'Requirement honoured by the analysis', 'Clause']],
-    body: items.map((it) => ['OK', it[0], it[1]]), theme: 'grid',
+    head: [['', 'Requirement status for this analysis', 'Clause']],
+    body: items, theme: 'grid',
     headStyles: { fillColor: INK, textColor: 255, fontSize: 8.4 },
     styles: { fontSize: 8.2, cellPadding: 1.6, lineColor: LINE },
-    columnStyles: { 0: { cellWidth: 10, halign: 'center', textColor: GREEN, fontStyle: 'bold' }, 2: { cellWidth: 32, textColor: BRAND_DK, fontStyle: 'bold', fontSize: 7.5 } },
+    columnStyles: { 0: { cellWidth: 10, halign: 'center', fontStyle: 'bold' }, 2: { cellWidth: 32, textColor: BRAND_DK, fontStyle: 'bold', fontSize: 7.5 } },
+    didParseCell: (h) => {
+      if (h.section === 'body' && h.column.index === 0) {
+        h.cell.styles.textColor = h.cell.raw === 'OK' ? GREEN : [180, 83, 9];
+      }
+    },
   });
   y = doc.lastAutoTable.finalY + 8;
 
@@ -372,16 +421,16 @@ function clausesAndAlternatives(doc, sol, designs) {
   doc.text(doc.splitTextToSize('Disclaimer. IndoPave-37 is a design-aid tool. Results are produced by a mechanistic-empirical analysis per IRC:37-2018/2019 and must be checked and sealed by a qualified pavement engineer before construction.', CONTENT_W), M, y);
 }
 
-export function generatePdfReport({ projectName, trafficParams, subgradeCbr, selectedSolution, adequateDesigns, airVoids, bitumenVolume }) {
+export function generatePdfReport({ projectName, trafficParams, subgradeCbr, selectedSolution, adequateDesigns, airVoids, bitumenVolume, granularAutoE = false }) {
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const sol = selectedSolution || {};
   const traffic = trafficParams || {};
   const mix = { airVoids, bitumenVolume };
   cover(doc, projectName, traffic, subgradeCbr, sol);
   doc.addPage(); designBasis(doc, traffic, subgradeCbr, sol, mix);
-  doc.addPage(); composition(doc, sol);
+  doc.addPage(); composition(doc, sol, granularAutoE);
   doc.addPage(); compliance(doc, sol);
-  doc.addPage(); clausesAndAlternatives(doc, sol, adequateDesigns || []);
+  doc.addPage(); clausesAndAlternatives(doc, sol, adequateDesigns || [], granularAutoE);
   headerFooter(doc, doc.getNumberOfPages());
   doc.save('IndoPave37_Report.pdf');
 }

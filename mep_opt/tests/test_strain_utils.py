@@ -131,3 +131,57 @@ def test_granular_only_section_no_bituminous_indices():
     )
     assert eps_t == 0.0
     assert eps_v == 450e-6
+
+
+# --- remap_eval_points_to_stack: interface probes must move with geometry ---
+
+from mep_opt.advanced._strain_utils import remap_eval_points_to_stack
+
+
+_BASE_STACK = [
+    {"modulus": 3000, "poisson": 0.35, "thickness": 190},
+    {"modulus": 200, "poisson": 0.35, "thickness": 480},
+    {"modulus": 62, "poisson": 0.35, "thickness": 0},
+]
+
+
+def _perturb(layer_idx, delta):
+    out = [dict(l) for l in _BASE_STACK]
+    out[layer_idx]["thickness"] += delta
+    return out
+
+
+def test_remap_moves_subgrade_probe_with_thickened_granular():
+    """+10 mm on the granular layer moves the 670.1 probe to 680.1."""
+    pts = [{"z": 670.1, "r": 0}, {"z": 670.1, "r": 155}]
+    remapped = remap_eval_points_to_stack(_BASE_STACK, _perturb(1, +10), pts)
+    assert remapped[0]["z"] == pytest.approx(680.1)
+    assert remapped[1]["z"] == pytest.approx(680.1)
+    assert remapped[1]["r"] == 155  # r untouched
+
+
+def test_remap_preserves_signed_offset_above_interface():
+    """A probe just ABOVE the bituminous bottom (189.9) stays just above it."""
+    pts = [{"z": 189.9, "r": 0}]
+    remapped = remap_eval_points_to_stack(_BASE_STACK, _perturb(0, -5), pts)
+    assert remapped[0]["z"] == pytest.approx(184.9)
+
+
+def test_remap_moves_deep_probe_when_upper_layer_changes():
+    """Thickening the TOP layer shifts every deeper interface too."""
+    pts = [{"z": 670.1, "r": 0}]
+    remapped = remap_eval_points_to_stack(_BASE_STACK, _perturb(0, +10), pts)
+    assert remapped[0]["z"] == pytest.approx(680.1)
+
+
+def test_remap_leaves_absolute_depth_probes_alone():
+    """A mid-layer probe (not within tolerance of any interface) keeps its z."""
+    pts = [{"z": 400.0, "r": 0}]
+    remapped = remap_eval_points_to_stack(_BASE_STACK, _perturb(1, +10), pts)
+    assert remapped[0]["z"] == pytest.approx(400.0)
+
+
+def test_remap_is_identity_for_unchanged_geometry():
+    pts = [{"z": 189.9, "r": 0}, {"z": 670.1, "r": 155}, {"z": 300.0, "r": 0}]
+    remapped = remap_eval_points_to_stack(_BASE_STACK, _BASE_STACK, pts)
+    assert [p["z"] for p in remapped] == [189.9, 670.1, 300.0]

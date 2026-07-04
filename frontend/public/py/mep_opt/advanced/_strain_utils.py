@@ -24,6 +24,72 @@ behaviour applies everywhere the advanced modules read bridge output.
 from typing import Dict, List, Optional, Tuple
 
 
+# Eval points within this distance of a layer interface are treated as
+# interface probes (the ±0.1 mm convention) and re-anchored when the
+# geometry changes. Larger offsets are absolute-depth probes and stay put.
+INTERFACE_ANCHOR_TOL_MM = 5.0
+
+
+def _interface_depths(layers: List[dict]) -> List[float]:
+    """Cumulative bottom depths of every finite layer (excludes subgrade)."""
+    depths: List[float] = []
+    cum = 0.0
+    for layer in layers[:-1]:
+        cum += float(layer.get("thickness", 0.0) or 0.0)
+        depths.append(cum)
+    return depths
+
+
+def remap_eval_points_to_stack(
+    base_layers: List[dict],
+    new_layers: List[dict],
+    eval_points: List[dict],
+    tol_mm: float = INTERFACE_ANCHOR_TOL_MM,
+) -> List[dict]:
+    """
+    Re-anchor interface-relative eval points after a thickness change.
+
+    The IRC critical strains live at layer interfaces (ε_t just above the
+    bituminous bottom, ε_v just below the granular/subgrade interface, σ_t
+    just above the CTB bottom). When a layer thickness is perturbed the
+    interfaces MOVE — reusing the caller's absolute z-coordinates then puts
+    the subgrade probe on the granular side of the interface, where ε_z is
+    ~40% lower (the classic wrong-side sampling bug). A +5 mm perturbation
+    was previously reported as a ~10x drop in rutting CDF: a pure artifact.
+
+    Each eval point within ``tol_mm`` of a base-geometry interface is
+    re-anchored to the SAME interface in the new geometry, preserving its
+    signed offset (so z = interface + 0.1 stays just below, z = interface
+    − 0.1 stays just above). Points not near any interface keep their
+    absolute depth.
+
+    Args:
+        base_layers: unperturbed stack (last entry = subgrade, thickness 0)
+        new_layers:  perturbed stack (same layer count)
+        eval_points: [{z, r}, ...] laid out for the BASE geometry
+
+    Returns:
+        New list of {z, r} dicts valid for the perturbed geometry.
+    """
+    base_if = _interface_depths(base_layers)
+    new_if = _interface_depths(new_layers)
+    if not base_if or len(base_if) != len(new_if):
+        return [dict(p) for p in eval_points]
+
+    out: List[dict] = []
+    for p in eval_points:
+        z = float(p.get("z", 0.0) or 0.0)
+        nearest = min(range(len(base_if)), key=lambda k: abs(z - base_if[k]))
+        offset = z - base_if[nearest]
+        if abs(offset) <= tol_mm:
+            remapped = dict(p)
+            remapped["z"] = new_if[nearest] + offset
+            out.append(remapped)
+        else:
+            out.append(dict(p))
+    return out
+
+
 def extract_design_strains(
     results: List[dict],
     point_roles: Optional[Dict[str, List[int]]] = None,

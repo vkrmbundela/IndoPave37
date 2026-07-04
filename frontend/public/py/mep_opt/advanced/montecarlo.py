@@ -9,7 +9,9 @@ import numpy as np
 from typing import Optional, List, Dict
 from mep_opt.solver.legacy_bridge import run_bridge_from_stack
 from mep_opt.solver.irc37 import check_design_adequacy, ReliabilityLevel
-from mep_opt.advanced._strain_utils import extract_design_strains
+from mep_opt.advanced._strain_utils import (
+    extract_design_strains, remap_eval_points_to_stack,
+)
 
 _RELIABILITY_MAP = {
     80: ReliabilityLevel.R80, 90: ReliabilityLevel.R90,
@@ -82,8 +84,14 @@ def run_monte_carlo(
                 entry["thickness"] = round(noisy_h, 1)
             perturbed.append(entry)
 
+        # Re-anchor the interface probes to THIS simulation's geometry.
+        # With fixed z-coordinates, every +noise draw pushed the subgrade
+        # probe onto the granular side of the interface (ε_v under-read
+        # ~40%), so the adequacy probability was systematically optimistic.
+        sim_points = remap_eval_points_to_stack(layers, perturbed, eval_points)
+
         try:
-            res = run_bridge_from_stack(perturbed, load_data, eval_points)
+            res = run_bridge_from_stack(perturbed, load_data, sim_points)
             # Role-aware extraction: each iteration is independent so a
             # short or oddly ordered result list cannot corrupt the
             # statistics by selecting the wrong row.

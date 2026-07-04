@@ -1,5 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Route, Upload, Play, Download, FileText } from 'lucide-react';
+import { getSolverMode } from '../../../lib/solver-client';
+
+// This module talks to the FastAPI backend directly (multipart CSV upload +
+// job polling) — it has no Pyodide equivalent. AdvancedPanel disables the tab
+// in browser mode; the guard below keeps the component honest if it is ever
+// rendered there anyway.
+const BACKEND_AVAILABLE = getSolverMode() === 'backend';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
 
@@ -160,12 +167,26 @@ export default function CorridorOptimizer() {
     ? Math.min(100, Math.round((status.completed / status.total) * 100))
     : 0;
 
+  if (!BACKEND_AVAILABLE) {
+    return (
+      <div className="p-6 text-center text-xs text-gray-500">
+        <Route size={40} className="mx-auto mb-3 text-gray-200" />
+        <p className="font-bold text-gray-600 mb-1">Corridor optimization needs the local backend</p>
+        <p>
+          CSV upload and job polling run on the FastAPI server, which the static in-browser deploy
+          does not include. Start it locally with
+          <code className="mx-1 px-1 bg-gray-100 rounded">python -m mep_opt.web.main</code>.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center gap-2">
         <Route size={16} className="text-orange-600" />
         <h2 className="text-sm font-bold text-gray-900">Corridor Optimization</h2>
-        <span className="text-[10px] text-gray-400">Batch GA optimization from CSV</span>
+        <span className="text-[10px] text-gray-400">Batch section-by-section optimization from CSV</span>
       </div>
 
       {/* Upload */}

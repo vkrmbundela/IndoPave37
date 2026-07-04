@@ -10,7 +10,9 @@ from typing import Dict, List, Optional
 
 from mep_opt.solver.legacy_bridge import run_bridge_from_stack
 from mep_opt.solver.irc37 import check_design_adequacy, ReliabilityLevel
-from mep_opt.advanced._strain_utils import extract_design_strains
+from mep_opt.advanced._strain_utils import (
+    extract_design_strains, remap_eval_points_to_stack,
+)
 
 DELTAS = [-10, -5, 5, 10]  # mm perturbations
 
@@ -74,8 +76,17 @@ def compute_sensitivity(
                     entry["thickness"] = new_h
                 perturbed.append(entry)
 
+            # The interfaces MOVE with the perturbation — re-anchor every
+            # interface probe to the perturbed geometry. Reusing the base
+            # z-coordinates put the ε_v probe on the granular side of the
+            # subgrade interface for +delta rows (≈40% strain under-read,
+            # reported as a spurious ~10x CDF drop).
+            perturbed_points = remap_eval_points_to_stack(
+                layers, perturbed, eval_points,
+            )
+
             try:
-                res = run_bridge_from_stack(perturbed, load_data, eval_points)
+                res = run_bridge_from_stack(perturbed, load_data, perturbed_points)
                 # Role-aware extraction: never conflate bit-bottom with
                 # subgrade-top rows, and never crash on a short result list.
                 eps_t, eps_v = extract_design_strains(res, point_roles)

@@ -200,15 +200,20 @@ class LayerConstraint(BaseModel):
     max_thickness: float
     is_fixed: bool = False
     fixed_thickness: float = 0.0
-    E: float
+    # Elastic modulus (MPa). None/omitted = "auto": the engine derives it —
+    # IRC:37-2018 Eq. 7.1 (thickness + support) for unbound granular layers
+    # (with the §7.2.3 composite collapse when every granular layer is
+    # unbound), Table 9.2 (temperature) for bituminous, and the IRC design
+    # values for cement-treated layers. A number pins the modulus explicitly.
+    E: Optional[float] = None
     nu: float
     geogrid: Optional[str] = None  # geosynthetic reinforcement: PP30/PET30/PET60/none
 
     @field_validator("E")
     @classmethod
     def e_positive(cls, v):
-        if v <= 0:
-            raise ValueError("Elastic modulus E must be positive")
+        if v is not None and v <= 0:
+            raise ValueError("Elastic modulus E must be positive (or null for auto)")
         return v
 
     @field_validator("geogrid")
@@ -630,7 +635,13 @@ async def run_optimization(data: OptimizeRequest):
         bounds = {}
         layer_props = {}
         for l in data.layers:
-            layer_props[l.layer_type] = {'E': l.E, 'nu': l.nu}
+            # E is only pinned when the caller supplied a number. Omitting it
+            # ("auto") lets build_layer_stack derive granular moduli from
+            # IRC:37-2018 Eq. 7.1 per candidate thickness — previously the UI
+            # always sent E, which silently disabled the Eq. 7.1 path.
+            layer_props[l.layer_type] = {'nu': l.nu}
+            if l.E is not None:
+                layer_props[l.layer_type]['E'] = l.E
             if getattr(l, 'geogrid', None):
                 layer_props[l.layer_type]['geogrid'] = l.geogrid
             if l.is_fixed:

@@ -8,7 +8,7 @@ conflict with existing /api/solve, /api/optimize, /api/report/pdf.
 import asyncio
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .reserve import compute_reserve
 from .materials_library import get_full_library, get_material_by_code
@@ -21,17 +21,18 @@ from .montecarlo import run_monte_carlo
 advanced_router = APIRouter(prefix="/api/v2", tags=["advanced"])
 
 # IRC 37:2018 defines exactly two reliability levels for highway pavement
-# design — pick the right one for the traffic volume:
-#   80% (R80): low-volume traffic, design MSA < 30
-#   90% (R90): high-volume traffic, design MSA ≥ 30
+# design — pick the right one for the traffic volume (§3.7):
+#   80% (R80): low-volume traffic, design traffic < 20 MSA
+#   90% (R90): mandatory for design traffic ≥ 20 MSA
 # Anything outside this set is rejected at the API boundary so the
 # advanced modules never silently run with a fabricated shift factor.
+# (The modules themselves auto-escalate R80 → R90 at ≥ 20 MSA.)
 DEFAULT_RELIABILITY = 80
 ALLOWED_RELIABILITY = (80, 90)
 _RELIABILITY_DESCRIPTION = (
-    "IRC 37:2018 reliability level. 80 (default) for low-volume traffic "
-    "(<30 MSA); 90 for high-volume highways (≥30 MSA). No other values "
-    "are IRC-compliant."
+    "IRC 37:2018 §3.7 reliability level. 80 (default) for low-volume traffic "
+    "(<20 MSA); 90 is mandatory for design traffic >= 20 MSA (auto-escalated). "
+    "No other values are IRC-compliant."
 )
 
 
@@ -153,6 +154,22 @@ class ReserveRequest(BaseModel):
             )
         return v
 
+def _validate_point_roles(v, n_points: int):
+    """Shared validation for the optional eval-point role mapping."""
+    if v is None:
+        return v
+    for role, idx_list in v.items():
+        if not isinstance(idx_list, list):
+            raise ValueError(f"point_roles[{role!r}] must be a list of indices")
+        for i in idx_list:
+            if not isinstance(i, int) or i < 0 or i >= n_points:
+                raise ValueError(
+                    f"point_roles[{role!r}] index {i!r} is out of range "
+                    f"for {n_points} eval_points"
+                )
+    return v
+
+
 class SensitivityRequest(BaseModel):
     """Inputs for the layer-thickness sensitivity heatmap."""
     layers: List[LayerData]
@@ -163,6 +180,10 @@ class SensitivityRequest(BaseModel):
     reliability: int = _reliability_field()
     air_voids: float = 3.0
     bitumen_volume: float = 11.5
+    # Optional role mapping, e.g. {"bit_bottom": [0, 1], "sub_top": [2, 3]}.
+    # Without it the modules assume the 4-point dashboard convention, which
+    # is WRONG for layouts with extra probes (e.g. 6-point CTB sections).
+    point_roles: Optional[Dict[str, List[int]]] = None
 
     @field_validator("reliability")
     @classmethod
@@ -172,6 +193,11 @@ class SensitivityRequest(BaseModel):
                 f"reliability must be one of {ALLOWED_RELIABILITY}; got {v}"
             )
         return v
+
+    @model_validator(mode="after")
+    def _check_point_roles(self):
+        _validate_point_roles(self.point_roles, len(self.eval_points))
+        return self
 
 class StrainFieldRequest(BaseModel):
     """Inputs for the 3D strain-bulb field."""
@@ -251,6 +277,8 @@ class MonteCarloRequest(BaseModel):
     reliability: int = _reliability_field()
     air_voids: float = 3.0
     bitumen_volume: float = 11.5
+    # See SensitivityRequest.point_roles.
+    point_roles: Optional[Dict[str, List[int]]] = None
 
     @field_validator("reliability")
     @classmethod
@@ -260,6 +288,11 @@ class MonteCarloRequest(BaseModel):
                 f"reliability must be one of {ALLOWED_RELIABILITY}; got {v}"
             )
         return v
+
+    @model_validator(mode="after")
+    def _check_point_roles(self):
+        _validate_point_roles(self.point_roles, len(self.eval_points))
+        return self
 
 def _layers_to_dicts(layers: List[LayerData]) -> list[dict]:
     return [l.model_dump() for l in layers]
@@ -322,7 +355,7 @@ async def sensitivity_heatmap(req: SensitivityRequest):
             req.cumulative_msa,
             req.mix_modulus,
             req.reliability,
-            None,                      # point_roles (use dashboard convention)
+            req.point_roles,           # None → 4-point dashboard convention
             req.air_voids,
             req.bitumen_volume,
         )
@@ -414,7 +447,7 @@ async def monte_carlo(req: MonteCarloRequest):
             req.sigmas,
             req.n_simulations,
             req.reliability,
-            None,                      # point_roles (use dashboard convention)
+            req.point_roles,           # None → 4-point dashboard convention
             req.air_voids,
             req.bitumen_volume,
         )

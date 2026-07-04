@@ -82,18 +82,23 @@ def run_optimize(request_json_str: str) -> str:
         
         for l in raw_layers:
             layer_type = l.get("layer_type")
-            E = float(l.get("E"))
+            # E null/omitted = "auto": granular moduli derive from IRC:37-2018
+            # Eq. 7.1 per candidate thickness (mirrors mep_opt.web.main).
+            raw_E = l.get("E")
+            E = float(raw_E) if raw_E is not None else None
             nu = float(l.get("nu"))
             geogrid = l.get("geogrid")
             is_fixed = bool(l.get("is_fixed", False))
             fixed_thickness = float(l.get("fixed_thickness", 0.0))
             min_thickness = float(l.get("min_thickness", 0.0))
             max_thickness = float(l.get("max_thickness", 0.0))
-            
+
             if layer_type.lower() != "subgrade":
                 l_types.append(layer_type)
-                
-            layer_props[layer_type] = {'E': E, 'nu': nu}
+
+            layer_props[layer_type] = {'nu': nu}
+            if E is not None:
+                layer_props[layer_type]['E'] = E
             if geogrid:
                 layer_props[layer_type]['geogrid'] = geogrid
                 

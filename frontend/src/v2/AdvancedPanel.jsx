@@ -3,6 +3,7 @@ import {
   X, Zap, Gauge, BookOpen, Grid3x3, Box, Route, Dice5,
 } from 'lucide-react';
 import { AdvancedProvider } from './AdvancedContext';
+import { getSolverMode } from '../lib/solver-client';
 import ReserveMeter from './modules/reserve/ReserveMeter';
 import MaterialPicker from './modules/materials/MaterialPicker';
 import SensitivityHeatmap from './modules/sensitivity/SensitivityHeatmap';
@@ -17,12 +18,18 @@ const DEFAULT_CTB_AXLE_SPECTRUM_TEXT = JSON.stringify([
 
 const StrainBulbViewer = lazy(() => import('./modules/strainbulb/StrainBulbViewer'));
 
+// The corridor batch optimizer is the one module that still needs the FastAPI
+// backend (CSV upload + async job polling — not mirrored into Pyodide). On the
+// static browser-mode deploy the tab is disabled with an explanatory tooltip
+// instead of failing with a dead localhost fetch.
+const CORRIDOR_AVAILABLE = getSolverMode() === 'backend';
 const TABS = [
   { id: 'reserve',      label: 'Reserve Meter',  icon: Gauge,   active: true },
   { id: 'materials',    label: 'Material Library',icon: BookOpen, active: true },
   { id: 'sensitivity',  label: 'Sensitivity',     icon: Grid3x3, active: true },
   { id: 'strainbulb',   label: '3D Strain Bulbs', icon: Box,     active: true },
-  { id: 'corridor',     label: 'Corridor Opt.',   icon: Route,   active: true },
+  { id: 'corridor',     label: 'Corridor Opt.',   icon: Route,   active: CORRIDOR_AVAILABLE,
+    disabledHint: 'Requires the local FastAPI backend — unavailable on the static in-browser deploy' },
   { id: 'montecarlo',   label: 'Monte Carlo',     icon: Dice5,   active: true },
 ];
 
@@ -93,6 +100,23 @@ export default function AdvancedPanel({ sharedState, onClose, onUpdateLayer }) {
           </Suspense>
         );
       case 'corridor':
+        if (!CORRIDOR_AVAILABLE) {
+          // A previously-saved activeTab may still point here in browser mode.
+          return (
+            <div className="flex-1 flex items-center justify-center p-8">
+              <div className="text-center max-w-md text-xs text-gray-500">
+                <Route size={40} className="mx-auto mb-3 text-gray-200" />
+                <p className="font-bold text-gray-600 mb-1">Corridor optimization needs the local backend</p>
+                <p>
+                  This module uploads a CSV and polls an async job on the FastAPI server, which the
+                  static in-browser (Pyodide) deploy does not include. Run
+                  <code className="mx-1 px-1 bg-gray-100 rounded">python -m mep_opt.web.main</code>
+                  locally and use the backend-mode dev build to enable it.
+                </p>
+              </div>
+            </div>
+          );
+        }
         return <CorridorOptimizer sharedState={advancedSharedState} />;
       case 'montecarlo':
         return <MonteCarloPanel sharedState={advancedSharedState} />;
@@ -180,7 +204,7 @@ export default function AdvancedPanel({ sharedState, onClose, onUpdateLayer }) {
                 key={tab.id}
                 onClick={() => isEnabled && setActiveTab(tab.id)}
                 disabled={!isEnabled}
-                title={!isEnabled ? 'Coming Soon' : tab.label}
+                title={!isEnabled ? (tab.disabledHint || 'Coming Soon') : tab.label}
                 className={`
                   flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium whitespace-nowrap transition-all
                   ${isActive

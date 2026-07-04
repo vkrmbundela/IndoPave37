@@ -231,9 +231,14 @@ class TestMaterialsEndpoint:
         assert resp.status_code == 200
         mat = resp.json()["material"]
         assert mat["code"] == "PMB40"
-        assert mat["E_default"] == 3000.0
+        # Modified binders share ONE IRC:37-2018 Table 9.2 row — 1600 MPa at
+        # the 35 °C design temperature. The earlier 3000 MPa was a vendor-style
+        # value carrying an IRC citation (July-2026 audit fix).
+        assert mat["E_default"] == 1600.0
         assert mat["source"] == "advanced"
         assert "temperature_table" in mat
+        # JSON object keys arrive as strings.
+        assert mat["temperature_table"].get("35", mat["temperature_table"].get(35)) == 1600
 
     def test_get_material_case_insensitive(self):
         resp = client.get("/api/v2/materials/gsb")

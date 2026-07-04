@@ -48,7 +48,8 @@ def run_advanced(req_json):
             res = compute_sensitivity(
                 r["layers"], r["load"], r["eval_points"],
                 float(r["cumulative_msa"]), float(r["mix_modulus"]),
-                int(r.get("reliability", 80)), None,
+                int(r.get("reliability", 80)),
+                r.get("point_roles"),  # None -> 4-point dashboard convention
                 float(r.get("air_voids", 3.0)), float(r.get("bitumen_volume", 11.5)),
             )
             return json.dumps(_to_native({"status": "ok", "layers": res}))
@@ -58,7 +59,8 @@ def run_advanced(req_json):
                 r["layers"], r["load"], r["eval_points"],
                 float(r["cumulative_msa"]), float(r["mix_modulus"]),
                 r.get("sigmas"), int(r.get("n_simulations", 100)),
-                int(r.get("reliability", 80)), None,
+                int(r.get("reliability", 80)),
+                r.get("point_roles"),  # None -> 4-point dashboard convention
                 float(r.get("air_voids", 3.0)), float(r.get("bitumen_volume", 11.5)),
             )
             return json.dumps(_to_native({"status": "ok", **res}))

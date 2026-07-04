@@ -90,3 +90,29 @@ def test_optimize_endpoint_hides_infeasible_fallback_designs(monkeypatch):
     assert body["is_adequate"] is False
     assert body["adequate_designs"] == []
     assert body["warnings"] == ["stub warning"]
+
+
+# --- July-2026 audit fix: E is optional ("auto" = IRC:37-2018 Eq. 7.1) ---
+
+def test_layer_constraint_accepts_null_E_for_auto_mode():
+    """E: null must validate (auto mode); E <= 0 must still be rejected."""
+    import pytest
+    from mep_opt.web.main import LayerConstraint
+
+    auto = LayerConstraint(
+        layer_type="WMM", min_thickness=150, max_thickness=300,
+        E=None, nu=0.35,
+    )
+    assert auto.E is None
+
+    pinned = LayerConstraint(
+        layer_type="WMM", min_thickness=150, max_thickness=300,
+        E=300.0, nu=0.35,
+    )
+    assert pinned.E == 300.0
+
+    with pytest.raises(Exception):
+        LayerConstraint(
+            layer_type="WMM", min_thickness=150, max_thickness=300,
+            E=-5.0, nu=0.35,
+        )

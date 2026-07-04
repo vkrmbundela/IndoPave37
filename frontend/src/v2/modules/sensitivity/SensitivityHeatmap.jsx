@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Grid3x3, Play, AlertCircle } from 'lucide-react';
 import useAdvancedApi from '../../hooks/useAdvancedApi';
-import { subgradeModulusFromCBR, bottomBituminousModulus, cumulativeMSA } from '../../../lib/irc';
+import { subgradeModulusFromCBR, bottomBituminousModulus, cumulativeMSA, classifyPointRoles } from '../../../lib/irc';
 
 function CdfCell({ value }) {
   if (value == null) return <td className="px-2 py-1 text-center text-[10px] text-gray-300">--</td>;
@@ -13,6 +13,7 @@ function CdfCell({ value }) {
 export default function SensitivityHeatmap({ sharedState }) {
   const { loading, error, post } = useAdvancedApi();
   const [result, setResult] = useState(null);
+  const [rolesOk, setRolesOk] = useState(true);
 
   const canRun = sharedState.results?.length > 0;
 
@@ -31,6 +32,13 @@ export default function SensitivityHeatmap({ sharedState }) {
       const p = sharedState.points[i];
       points.push({ z: p.z, r: p.r });
     }
+
+    // Tell the backend WHICH rows are the fatigue / rutting probes by depth,
+    // instead of letting it assume rows 0-1 / 2-3 (wrong for 6-point CTB
+    // layouts). When classification fails (stale points) we fall back to the
+    // legacy assumption and show a warning banner.
+    const roles = classifyPointRoles(sharedState.layers, sharedState.numLayers, points);
+    setRolesOk(roles.ok);
 
     // Real cumulative MSA from the traffic inputs (not raw CVPD), and the
     // BOTTOM bituminous layer modulus for fatigue (IRC §3.6.2).
@@ -57,6 +65,7 @@ export default function SensitivityHeatmap({ sharedState }) {
       reliability: sharedState.reliabilityPercent ?? 80,
       air_voids: sharedState.airVoids ?? 3.0,
       bitumen_volume: sharedState.bitumenVolume ?? 11.5,
+      point_roles: roles.ok ? { bit_bottom: roles.bit_bottom, sub_top: roles.sub_top } : undefined,
     });
 
     if (resp?.status === 'ok') setResult(resp.layers);
@@ -88,6 +97,17 @@ export default function SensitivityHeatmap({ sharedState }) {
 
       {error && (
         <div className="p-3 bg-red-50 border border-red-200 rounded text-[11px] text-red-700">{error}</div>
+      )}
+
+      {!rolesOk && result && (
+        <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800">
+          <AlertCircle size={13} className="mt-0.5 shrink-0" />
+          <span>
+            The analysis points don't line up with the current layer interfaces, so the legacy
+            row-order assumption was used. Update the point depths to the bituminous bottom and
+            top of subgrade for reliable sensitivities.
+          </span>
+        </div>
       )}
 
       {result && result.map((layer, li) => (

@@ -290,3 +290,51 @@ def test_compute_reserve_zero_design_traffic_is_unbounded():
     )
     assert math.isfinite(result["reserve_percent"])
     assert result["is_unbounded"] is True
+
+
+# ---------------------------------------------------------------------------
+# July-2026 audit fix: the sensitivity / Monte-Carlo modules must re-anchor
+# the interface probes when they perturb layer thicknesses. With FIXED eval
+# points, a +5 mm perturbation pushed the subgrade probe onto the granular
+# side of the interface (~40% eps_v under-read), reported as a spurious ~10x
+# drop in rutting CDF.
+# ---------------------------------------------------------------------------
+
+def test_sensitivity_positive_delta_does_not_collapse_rutting_strain():
+    """IRC II.3 stack: eps_v for +5/+10 mm rows must stay near ~243 ue,
+    not collapse to the granular-side ~140 ue artifact."""
+    from mep_opt.advanced.sensitivity import compute_sensitivity
+
+    layers = [
+        {"modulus": 3000, "poisson": 0.35, "thickness": 190},
+        {"modulus": 200,  "poisson": 0.35, "thickness": 480},
+        {"modulus": 62,   "poisson": 0.35, "thickness": 0},
+    ]
+    load = {"load": 20000, "pressure": 0.56, "is_dual": True, "spacing": 310}
+    pts = [{"z": 189.9, "r": 0}, {"z": 189.9, "r": 155},
+           {"z": 670.1, "r": 0}, {"z": 670.1, "r": 155}]
+
+    out = compute_sensitivity(
+        layers, load, pts, 131, 3000, 90,
+        {"bit_bottom": [0, 1], "sub_top": [2, 3]},
+        air_voids=3.0, bitumen_volume=11.5,
+    )
+    gran = next(o for o in out if o["layer_index"] == 1)
+    by_delta = {d["delta_mm"]: d for d in gran["deltas"]}
+
+    # Both thickening rows must read the subgrade side of the MOVED interface.
+    for delta in (5, 10):
+        eps_v = by_delta[delta]["eps_v"]
+        assert eps_v is not None
+        assert eps_v > 200e-6, (
+            f"+{delta} mm row reports eps_v={eps_v*1e6:.1f} ue — the stale "
+            f"granular-side artifact (~140 ue) has regressed"
+        )
+
+    # And thickening MUST reduce eps_v monotonically (physics sanity).
+    assert by_delta[10]["eps_v"] < by_delta[-10]["eps_v"]
+
+    # The fatigue probe moves with the bituminous bottom likewise: thickening
+    # the granular layer must not silently change the fatigue row semantics.
+    assert by_delta[10]["eps_t"] is not None
+    assert by_delta[10]["eps_t"] > 100e-6

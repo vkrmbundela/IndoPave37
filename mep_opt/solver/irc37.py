@@ -19,8 +19,8 @@ class ReliabilityLevel(Enum):
     Design reliability level.
 
     IRC 37:2018 only specifies two levels:
-      - R80: 80% reliability (low-volume traffic, < 30 MSA)
-      - R90: 90% reliability (high-volume traffic, ≥ 30 MSA)
+      - R80: 80% reliability (low-volume traffic, < 20 MSA)
+      - R90: 90% reliability (mandatory for design traffic ≥ 20 MSA, §3.7)
 
     R95/R98/R99 are NOT defined in IRC 37:2018. They are retained here for
     legacy callers but the calculation falls back to R90 with a warning,
@@ -347,9 +347,59 @@ def rutting_life(eps_v: float,
     return NR
 
 
+def ctb_fatigue_life_strain(eps_t: float, ctb_modulus: float,
+                            reliability: ReliabilityLevel = ReliabilityLevel.R90) -> float:
+    """
+    Allowable fatigue repetitions for a Cement Treated Base per the
+    strain-based criterion of IRC:37-2018 Eq. 3.5:
+
+        N = RF x [ (113000 / E^0.804 + 191) / eps_t_microstrain ]^12
+
+    Where:
+    - N   = allowable standard-axle repetitions (fatigue life of CTB)
+    - E   = elastic modulus of the CTB (MPa)
+    - eps_t = tensile strain at the bottom of the CTB (microstrain in the
+      IRC equation; THIS function takes absolute strain, like fatigue_life
+      and rutting_life, and converts internally)
+    - RF  = reliability factor for cementitious-base fatigue:
+              1 for 90% reliability (Expressways/NH/high-volume roads)
+              2 for 80% reliability (other categories)
+
+    This is the primary IRC:37 CTB fatigue check against the design
+    traffic. The stress-ratio relation (ctb_fatigue_life, Eq. 3.6) is the
+    complementary cumulative-damage check over the heavy-axle spectrum.
+
+    Args:
+        eps_t: Tensile strain at bottom of CTB (absolute value, not microstrain)
+        ctb_modulus: CTB elastic modulus (MPa)
+        reliability: ReliabilityLevel (only R80/R90 are IRC-defined)
+
+    Returns:
+        Allowable repetitions N
+    """
+    if abs(eps_t) < 1e-15:
+        return float('inf')
+    if ctb_modulus is None or ctb_modulus <= 0:
+        raise ValueError(
+            f"ctb_modulus must be > 0 MPa (got {ctb_modulus!r})"
+        )
+
+    CTB_RELIABILITY_FACTOR = {
+        ReliabilityLevel.R80: 2.0,
+        ReliabilityLevel.R90: 1.0,
+    }
+    rf = CTB_RELIABILITY_FACTOR[_resolve_irc_reliability(reliability)]
+
+    eps_micro = abs(eps_t) * 1e6
+    numerator = 113000.0 / (ctb_modulus ** 0.804) + 191.0
+    return rf * (numerator / eps_micro) ** 12
+
+
 def ctb_fatigue_life(sigma_t: float, modulus_of_rupture: float = 1.4) -> float:
     """
-    Allowable fatigue repetitions for Cement Treated Base (CTB) per IRC 37.
+    Allowable fatigue repetitions for Cement Treated Base (CTB) per the
+    stress-ratio relation of IRC 37:2018 (Eq. 3.6) — used for the
+    cumulative-damage check over an axle-load spectrum.
 
     N = 10 ^ ((0.972 - SR) / 0.0825)
     Where SR (Stress Ratio) = sigma_t / modulus_of_rupture

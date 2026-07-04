@@ -48,7 +48,9 @@ def compute_reserve(
     mix_modulus: float,
     design_msa: float,
     reliability: int = 80,
-    air_voids: float = 4.0,
+    # Defaults match the IRC Annex-II mix (Va 3 %, Vbe 11.5 %) — the same
+    # values the optimizer and the other advanced modules default to.
+    air_voids: float = 3.0,
     bitumen_volume: float = 11.5,
 ) -> dict:
     """

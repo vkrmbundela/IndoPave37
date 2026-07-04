@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Gauge, AlertCircle, ShieldCheck, TrendingUp } from 'lucide-react';
 import useAdvancedApi from '../../hooks/useAdvancedApi';
-import { bottomBituminousModulus } from '../../../lib/irc';
+import { bottomBituminousModulus, classifyPointRoles } from '../../../lib/irc';
 
 function GaugeBar({ label, value, max, color, unit = 'MSA' }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
@@ -43,23 +43,31 @@ export default function ReserveMeter({ sharedState }) {
   const api = useAdvancedApi();
   const { post } = api;
   const [result, setResult] = useState(null);
+  // Whether the analysis points could be matched to the CURRENT layer
+  // interfaces. False = stale/custom points → legacy positional fallback.
+  const [rolesOk, setRolesOk] = useState(true);
 
   const hasResults = sharedState.results && sharedState.results.length > 0;
 
   useEffect(() => {
     if (!hasResults) return;
 
-    // Role-aware extraction (Issues.md #7). The dashboard convention is:
-    //   results[0..1] = bottom of bituminous   → drives FATIGUE (eps_t / eps_r)
-    //   results[2..3] = top of subgrade         → drives RUTTING (eps_z)
-    // Naïve `Math.max` over every row conflates the two: a large eps_t at a
-    // subgrade row would silently win the fatigue check, producing a wrong
-    // reserve number. Same fix backend uses in extract_design_strains().
+    // Role-aware extraction. Classify each result row by its DEPTH against
+    // the current layer interfaces — not by its position in the list. The
+    // old positional slice (rows 0-1 = fatigue, rows 2-3 = rutting) misread
+    // 6-point CTB layouts, where rows 2-3 are the CTB bottom: the "rutting"
+    // strain was then read at the CTB bottom, corrupting the reserve.
     const rows = sharedState.results;
     const nRows = rows.length;
+    const roles = classifyPointRoles(sharedState.layers, sharedState.numLayers, rows);
     let bitRows;
     let subRows;
-    if (nRows >= 4) {
+    if (roles.ok) {
+      bitRows = roles.bit_bottom.map((i) => rows[i]);
+      subRows = roles.sub_top.map((i) => rows[i]);
+    } else if (nRows >= 4) {
+      // Fallback: legacy positional convention (points may be stale relative
+      // to the current thicknesses — the banner below flags this case).
       bitRows = rows.slice(0, 2);
       subRows = rows.slice(2, 4);
     } else if (nRows >= 2) {
@@ -71,6 +79,7 @@ export default function ReserveMeter({ sharedState }) {
       bitRows = [];
       subRows = rows;
     }
+    setRolesOk(roles.ok);
 
     const absT = (r) => Math.max(
       Math.abs(r.eps_t || r.strain_t || 0),
@@ -183,6 +192,18 @@ export default function ReserveMeter({ sharedState }) {
         </div>
         <StatusBadge reserve={result.reserve_percent} />
       </div>
+
+      {!rolesOk && (
+        <div className="mb-4 flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800">
+          <AlertCircle size={13} className="mt-0.5 shrink-0" />
+          <span>
+            The analysis points do not line up with the current layer interfaces (bituminous bottom /
+            top of subgrade), so the legacy row-order assumption was used. If you changed thicknesses
+            after the last Evaluate, update the point depths and re-run Evaluate — otherwise this
+            reserve may be computed from strains at the wrong depths.
+          </span>
+        </div>
+      )}
 
       {/* Main Gauge */}
       <div className="bg-gray-50 rounded-lg border border-gray-200 p-5 mb-5">
