@@ -61,11 +61,21 @@ jobs:
   deploy:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
 
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
+        # The Pages service intermittently returns "Deployment failed, try
+        # again later" even when the artifact is fine (observed twice in a
+        # row on this repo). Let the step fail without failing the job, then
+        # retry once below.
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+
+      - name: Retry deploy (transient Pages service errors)
+        id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
