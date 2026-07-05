@@ -231,7 +231,11 @@ button, select, input, a, [role="button"] {
 /* ============================================================
    Resizable tables — draggable column & row grips
    ============================================================ */
-.fp-rt { table-layout: fixed; width: 100%; }
+/* The table width is set inline to the SUM of the column widths (rt.total).
+   `width:100%` here made the browser re-distribute the container width over
+   every column during a drag — pulling one grip visibly moved ALL columns
+   and stretched the header across the panel ("messy" resize). */
+.fp-rt { table-layout: fixed; }
 .fp-rt th, .fp-rt td { overflow: hidden; text-overflow: ellipsis; }
 
 /* Column resize grip: thin hit-area on the inner right edge of a header cell

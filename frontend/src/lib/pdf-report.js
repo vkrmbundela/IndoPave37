@@ -215,6 +215,7 @@ function designBasis(doc, traffic, cbr, sol, mix) {
     ['Commercial vehicles / day (CVPD)', String(num(traffic.cvpd)), ''],
     ['Annual growth rate', `${grPct.toFixed(1)} %`, ''],
     ['Vehicle damage factor (VDF)', String(num(traffic.vdf, 2.5)), 'std axles / CV'],
+    ['Lane distribution factor (LDF)', String(num(traffic.ldf, 0.75)), 'design-lane share, Sec 4.5'],
     ['Design life', `${num(traffic.design_life, 20)} years`, ''],
     ['Cumulative design traffic', `${msa.toFixed(2)} MSA`, '365.A.D.F.((1+r)^n-1)/r'],
   ]);

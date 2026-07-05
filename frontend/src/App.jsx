@@ -14,7 +14,9 @@ function ColGrip({ rt, i }) {
   return (
     <span
       className="fp-col-grip"
+      title="Drag to resize · double-click to reset"
       onPointerDown={(e) => rt.startColResize(i, e)}
+      onDoubleClick={() => rt.resetCol(i)}
     />
   );
 }
@@ -422,12 +424,18 @@ const MATERIAL_DATABASE = {
   WMM:  { name: 'Wet Mix Macadam',                abbr: 'WMM',  default_E: 300,  default_nu: 0.35, category: 'granular' },
   WBM:  { name: 'Water Bound Macadam',            abbr: 'WBM',  default_E: 250,  default_nu: 0.35, category: 'granular' },
   GSB:  { name: 'Granular Sub-Base',              abbr: 'GSB',  default_E: 200,  default_nu: 0.35, category: 'granular' },
+  CRL:  { name: 'Granular Crack Relief Layer',    abbr: 'CRL',  default_E: 450,  default_nu: 0.35, category: 'granular' },
   CTB:  { name: 'Cement Treated Base',            abbr: 'CTB',  default_E: 5000, default_nu: 0.25, category: 'cement_treated' },
+  CTSB: { name: 'Cement Treated Sub-Base',        abbr: 'CTSB', default_E: 600,  default_nu: 0.25, category: 'cement_treated' },
   RAP:  { name: 'Reclaimed Asphalt Pavement',     abbr: 'RAP',  default_E: 800,  default_nu: 0.35, category: 'bituminous' },
 };
 const LAYER_TYPE_OPTIONS = Object.keys(MATERIAL_DATABASE);
 // Granular layer types that accept geosynthetic (geogrid) reinforcement.
 const GRANULAR_LAYER_TYPES = new Set(['WMM', 'WBM', 'GSB']);
+// Unbound granular types eligible for the "Auto Eq. 7.1" derived modulus
+// (CRL included — the engine assigns it the fixed IRC 450 MPa when it sits
+// directly above a cement-treated base, Eq. 7.1 otherwise).
+const AUTO_E_TYPES = new Set(['WMM', 'WBM', 'GSB', 'CRL']);
 
 // Resolve the effective material type for a layer: explicit `type` wins; else
 // fall back to `name` when it is itself a known type (legacy use-case data).
@@ -1105,6 +1113,12 @@ export default function App() {
   const [helpActiveTab, setHelpActiveTab] = useState('workflow');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [hasStarted, setHasStarted] = useState(savedData.hasStarted || false);
+  // One-time notice when the workspace was restored from the browser's
+  // auto-save — otherwise a returning user sees "mystery" pre-filled values
+  // with no explanation of where they came from.
+  const [restoredNotice, setRestoredNotice] = useState(
+    !!(savedData.layers || savedData.results || savedData.optimizedDesigns)
+  );
   const [materialRates, setMaterialRates] = useState(savedData.materialRates || DEFAULT_MATERIAL_RATES);
   const [showRatesPanel, setShowRatesPanel] = useState(savedData.showRatesPanel || false);
   const [showCtbPanel, setShowCtbPanel] = useState(savedData.showCtbPanel || false);
@@ -1259,7 +1273,7 @@ export default function App() {
           // modulus from IRC:37-2018 Eq. 7.1 for EVERY candidate thickness
           // (a pinned number here would freeze the modulus while the
           // optimizer varies the thickness — non-IRC behaviour).
-          E: (l.auto_E && GRANULAR_LAYER_TYPES.has(layerType(l))) ? null : l.E,
+          E: (l.auto_E && AUTO_E_TYPES.has(layerType(l))) ? null : l.E,
           nu: l.nu,
           is_fixed: l.is_fixed,
           fixed_thickness: l.fixed_h || 0,
@@ -1328,7 +1342,7 @@ export default function App() {
     // granular layer was in auto-E mode (the engine skips Eq. 7.1 for layers
     // with a pinned modulus) — the PDF compliance table must not over-claim.
     const structural = layers.slice(0, Math.min(numLayers, layers.length) - 1);
-    const unboundGranular = structural.filter(l => GRANULAR_LAYER_TYPES.has(layerType(l)));
+    const unboundGranular = structural.filter(l => AUTO_E_TYPES.has(layerType(l)));
     const granularAutoE = unboundGranular.length > 0 && unboundGranular.every(l => !!l.auto_E);
     try {
       generatePdfReport({
@@ -1603,6 +1617,24 @@ export default function App() {
         </div>
       </div>
 
+      {/* Auto-save restore notice — the pre-filled values are the user's own
+          last session, not arbitrary defaults; say so once, dismissibly. */}
+      {restoredNotice && (
+        <div className="flex-none flex items-center justify-between gap-3 px-3 py-1 bg-sky-50 border-b border-sky-200 text-[11px] text-sky-900">
+          <span>
+            <b>Session restored</b> — these inputs and results are your last session, auto-saved in this
+            browser. Use <b>Reset</b> for a fresh project (it offers a JSON export first) or <b>Export</b> to file this one.
+          </span>
+          <button
+            onClick={() => setRestoredNotice(false)}
+            className="p-0.5 rounded hover:bg-sky-100 text-sky-700 shrink-0"
+            title="Dismiss"
+          >
+            <X size={12}/>
+          </button>
+        </div>
+      )}
+
       {/* WORKSPACE: inputs, preview, and results flow in a scrollable column */}
       <div className="flex-1 flex flex-col">
 
@@ -1627,7 +1659,8 @@ export default function App() {
                   </select>
                 </div>
               </div>
-              <table className="fp-rt text-[11px] border-collapse">
+              <div className="overflow-x-auto">
+              <table className="fp-rt text-[11px] border-collapse" style={{ width: layerRT.total }}>
                 <colgroup>{layerRT.cols.map((w,k)=><col key={k} style={{width:w}}/>)}</colgroup>
                 <thead>
                   <tr className="fp-head-strip text-[10px] text-slate-500 uppercase font-semibold tracking-wide">
@@ -1673,10 +1706,8 @@ export default function App() {
                                       if (ePristine) updates.E = mat.default_E;
                                       if (nuPristine) updates.nu = mat.default_nu;
                                     }
-                                    if (!GRANULAR_LAYER_TYPES.has(v)) {
-                                      updates.geogrid = null;
-                                      updates.auto_E = false; // Eq. 7.1 applies to unbound granular only
-                                    }
+                                    if (!GRANULAR_LAYER_TYPES.has(v)) updates.geogrid = null;
+                                    if (!AUTO_E_TYPES.has(v)) updates.auto_E = false; // Eq. 7.1 applies to unbound granular only
                                     return updates;
                                   }));
                                 }}
@@ -1739,9 +1770,9 @@ export default function App() {
                             title={sub ? "Determined by Subgrade CBR (%) in Opt Target"
                               : l.auto_E ? "Auto — derived from IRC:37-2018 Eq. 7.1 (0.2·h^0.45·E_support); the optimizer re-derives it for every candidate thickness"
                               : ""}
-                            className={cn(inp,"w-20", (sub || l.auto_E) && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
+                            className={cn(inp,"w-full min-w-0", (sub || l.auto_E) && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
                           />
-                          {!sub && GRANULAR_LAYER_TYPES.has(layerType(l)) && (
+                          {!sub && AUTO_E_TYPES.has(layerType(l)) && (
                             <label
                               className="mt-0.5 flex items-center gap-1 cursor-pointer select-none"
                               title="Auto: derive this granular modulus from IRC:37-2018 Eq. 7.1 (and the §7.2.3 composite rule). Recommended — a pinned E stays constant while the optimizer varies the thickness, which deviates from IRC."
@@ -1766,16 +1797,16 @@ export default function App() {
                             step="0.01"
                             disabled={sub}
                             title={sub ? "Fixed to 0.35 for Subgrade" : ""}
-                            className={cn(inp,"w-14", sub && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
+                            className={cn(inp,"w-full min-w-0", sub && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
                           />
                         </td>
                         <td className="py-0.5 px-1.5">
                           {sub ? <span className="text-gray-400 text-[11px]">∞</span>
-                          : l.is_fixed ? <input type="number" value={l.fixed_h} onChange={e=>updateLayer(i,'fixed_h',Number(e.target.value))} className={cn(inp,"w-20")}/>
+                          : l.is_fixed ? <input type="number" value={l.fixed_h} onChange={e=>updateLayer(i,'fixed_h',Number(e.target.value))} className={cn(inp,"w-full min-w-0")}/>
                           : <div className="flex gap-1 items-center">
-                              <input type="number" value={l.min_h} onChange={e=>updateLayer(i,'min_h',Number(e.target.value))} className={cn(inp,"w-16")} placeholder="min"/>
+                              <input type="number" value={l.min_h} onChange={e=>updateLayer(i,'min_h',Number(e.target.value))} className={cn(inp,"flex-1 min-w-0")} placeholder="min"/>
                               <span className="text-gray-400 text-xs">–</span>
-                              <input type="number" value={l.max_h} onChange={e=>updateLayer(i,'max_h',Number(e.target.value))} className={cn(inp,"w-16")} placeholder="max"/>
+                              <input type="number" value={l.max_h} onChange={e=>updateLayer(i,'max_h',Number(e.target.value))} className={cn(inp,"flex-1 min-w-0")} placeholder="max"/>
                             </div>}
                         </td>
                       </tr>
@@ -1783,6 +1814,7 @@ export default function App() {
                   })}
                 </tbody>
               </table>
+              </div>
             </div>
 
             {/* Bottom strip: Analysis Points | Load Config | Opt Target | Actions */}
@@ -1797,7 +1829,8 @@ export default function App() {
                     {[1,2,3,4,5,6,7,8,9,10].map(n=><option key={n} value={n}>{n}</option>)}
                   </select>
                 </legend>
-                <table className="fp-rt text-[11px] border-collapse">
+                <div className="overflow-x-auto">
+                <table className="fp-rt text-[11px] border-collapse" style={{ width: pointsRT.total }}>
                   <colgroup>{pointsRT.cols.map((w,k)=><col key={k} style={{width:w}}/>)}</colgroup>
                   <thead>
                     <tr className="text-[9px] text-gray-400 uppercase font-semibold">
@@ -1810,12 +1843,13 @@ export default function App() {
                     {points.map((p,i)=>(
                       <tr key={i} style={pointsRT.rowH[i]?{height:pointsRT.rowH[i]}:undefined}>
                         <td className="relative py-0.5 font-bold text-gray-400 text-[10px]">{i+1}<RowGrip rt={pointsRT} rowKey={i} getHeight={()=>pointsRT.rowH[i]||0}/></td>
-                        <td className="py-0.5 pr-1"><input type="number" value={p.z} onChange={e=>updatePoint(i,'z',Number(e.target.value))} className={cn(inp,"w-full py-0")}/></td>
-                        <td className="py-0.5"><input type="number" value={p.r} onChange={e=>updatePoint(i,'r',Number(e.target.value))} className={cn(inp,"w-full py-0")}/></td>
+                        <td className="py-0.5 pr-1"><input type="number" value={p.z} onChange={e=>updatePoint(i,'z',Number(e.target.value))} className={cn(inp,"w-full min-w-0 py-0")}/></td>
+                        <td className="py-0.5"><input type="number" value={p.r} onChange={e=>updatePoint(i,'r',Number(e.target.value))} className={cn(inp,"w-full min-w-0 py-0")}/></td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                </div>
               </fieldset>
 
               {/* Material Rates Panel — only relevant when optimizing for
