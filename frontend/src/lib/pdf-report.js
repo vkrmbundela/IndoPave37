@@ -30,6 +30,48 @@ const allowableStrain = (eps, cdf, n) => {
 };
 const ue = (v) => (v == null ? '--' : `${(Math.abs(num(v)) * 1e6).toFixed(1)} ue`);
 
+// ---------------------------------------------------------------------------
+// Layout-robustness helpers. Overlaps come from two habits: advancing y by a
+// guessed constant instead of the measured text height, and measuring a
+// string's width AFTER switching to a different font. Everything below is
+// measured with the metrics of the font that actually draws the text.
+// ---------------------------------------------------------------------------
+
+// Content must stay above the footer rule (drawn at PAGE_H - 12).
+const FOOTER_CLEAR_Y = PAGE_H - 16;
+// y for content on a continuation page (below the running header at 14).
+const PAGE_TOP_Y = 22;
+
+// Current line height in mm for the ACTIVE font (jsPDF returns pt).
+const lineHmm = (doc) => doc.getLineHeight() / doc.internal.scaleFactor;
+
+// Draw wrapped text at (x, y) and return the baseline of the LAST line —
+// callers add their own gap. Never advance by a guessed constant again.
+function textBlock(doc, text, x, y, width) {
+  const lines = Array.isArray(text) ? text : doc.splitTextToSize(String(text), width);
+  doc.text(lines, x, y);
+  return y + (lines.length - 1) * lineHmm(doc);
+}
+
+// Page-overflow guard for manually drawn blocks (autoTable paginates its own
+// rows, but rects / rules / doc.text do not). Returns the y to draw at.
+function ensureSpace(doc, y, neededMm) {
+  if (y + neededMm <= FOOTER_CLEAR_Y) return y;
+  doc.addPage();
+  return PAGE_TOP_Y;
+}
+
+// Big value + small unit on one baseline. The unit offset is measured while
+// the VALUE font is still active — measuring after the font switch is what
+// overlapped "18.1" and "MSA" on the cover cards.
+function valueWithUnit(doc, x, y, value, unit, valueSize = 16, unitSize = 8) {
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(valueSize); doc.setTextColor(...INK);
+  doc.text(String(value), x, y);
+  const valueW = doc.getTextWidth(String(value)); // metrics of the value font
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(unitSize); doc.setTextColor(...MUTED);
+  doc.text(String(unit), x + valueW + 2, y);
+}
+
 function logoMark(doc, x, y, s) {
   doc.setFillColor(...BRAND); doc.roundedRect(x, y, s, s, s * 0.24, s * 0.24, 'F');
   doc.setFillColor(255, 255, 255);
@@ -105,7 +147,8 @@ function cover(doc, project, traffic, cbr, sol) {
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(...MUTED);
   doc.text('PROJECT', M + 5, y + 4.5);
   doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(...INK);
-  doc.text(String(project || 'Untitled Design Session'), M + 5, y + 8.5);
+  // Clamp to one line so a long custom project name cannot escape the bar.
+  doc.text(doc.splitTextToSize(String(project || 'Untitled Design Session'), CONTENT_W - 12)[0], M + 5, y + 8.5);
   y += 18;
 
   const d = sol.details || {};
@@ -142,10 +185,9 @@ function cover(doc, project, traffic, cbr, sol) {
     doc.rect(cx, cy, cw, ch, 'FD');
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(...MUTED);
     doc.text(c[0], cx + 5, cy + 6);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(...INK);
-    doc.text(c[1], cx + 5, cy + 14);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...MUTED);
-    doc.text(c[2], cx + 5 + doc.getTextWidth(c[1]) + 2, cy + 14);
+    // Width-safe value + unit (the old inline version measured the value
+    // AFTER switching to the 8 pt unit font, overlapping "18.1" and "MSA").
+    valueWithUnit(doc, cx + 5, cy + 14, c[1], c[2]);
   });
   y += 2 * ch + 6 + 8;
 
@@ -248,9 +290,12 @@ function composition(doc, sol, granularAutoE) {
     CONTENT_W), M, y);
   y += 8;
 
-  // Cross-section
-  y = sectionHeading(doc, y, 'Cross-Section', null);
+  // Cross-section — each layer draws at least 9 mm tall plus the 10 mm
+  // subgrade block, so a many-layer stack after a long table can spill past
+  // the footer. Reserve the real minimum height before drawing.
   const struct = rich.filter((l) => !String(l.name).toLowerCase().startsWith('sub'));
+  y = ensureSpace(doc, y, 10 + struct.length * 9 + 10 + 6);
+  y = sectionHeading(doc, y, 'Cross-Section', null);
   const total = struct.reduce((a, l) => a + l.thickness, 0) || 1;
   const maxH = Math.min(PAGE_H - 30 - y, 120);
   const secW = 95, x0 = M + 6; let yy = y;
@@ -276,17 +321,31 @@ function composition(doc, sol, granularAutoE) {
 // ---- Criterion block ----
 function criterion(doc, y, title, clause, equation, rows, ok) {
   const [bg, fg] = ok ? [GREEN_BG, GREEN] : [RED_BG, RED];
+
+  // Measure the wrapped equation with the font that will draw it, BEFORE
+  // laying anything out, so both the page-break check and the vertical
+  // advance use real heights instead of guesses.
+  doc.setFont('helvetica', 'italic'); doc.setFontSize(8.4);
+  const eqLines = doc.splitTextToSize(equation, CONTENT_W - 4);
+  const eqH = eqLines.length * lineHmm(doc);
+  // header strip 7 + gap 4.5 + equation + gap + ~3 table rows: never start a
+  // criterion that would collide with the footer.
+  y = ensureSpace(doc, y, 7 + 4.5 + eqH + 3 + rows.length * 6.5);
+
   doc.setFillColor(...PANEL); doc.rect(M, y, CONTENT_W, 7, 'F');
   doc.setDrawColor(...fg); doc.setLineWidth(0.6); doc.line(M, y + 7, PAGE_W - M, y + 7);
   doc.setFont('helvetica', 'bold'); doc.setFontSize(8.6); doc.setTextColor(...INK);
   doc.text(title, M + 2, y + 4.8);
   doc.setFontSize(7.5); doc.setTextColor(...BRAND_DK); doc.text(clause, M + 95, y + 4.8);
   doc.setFontSize(8.6); doc.setTextColor(...fg); doc.text(ok ? 'PASS' : 'FAIL', PAGE_W - M - 2, y + 4.8, { align: 'right' });
-  y += 9;
+
+  // First equation baseline sits 4.5 mm below the rule at y+7 — 8.4 pt
+  // capitals rise ~2.1 mm above the baseline, so they now clear the rule
+  // (the old y+9 baseline put the rule straight through the text).
   doc.setFont('helvetica', 'italic'); doc.setFontSize(8.4); doc.setTextColor(...INK);
-  doc.text(doc.splitTextToSize(equation, CONTENT_W - 4), M + 2, y); y += equation.length > 90 ? 7 : 4;
+  const lastBaseline = textBlock(doc, eqLines, M + 2, y + 11.5, CONTENT_W - 4);
   autoTable(doc, {
-    startY: y, margin: { left: M, right: M }, head: [rows[0]], body: rows.slice(1), theme: 'grid',
+    startY: lastBaseline + 2, margin: { left: M, right: M }, head: [rows[0]], body: rows.slice(1), theme: 'grid',
     headStyles: { fillColor: SURFACE, textColor: MUTED, fontSize: 8 },
     styles: { fontSize: 8.2, cellPadding: 1.6, lineColor: LINE, halign: 'center' },
     columnStyles: { 0: { halign: 'left' } },
@@ -301,8 +360,9 @@ function compliance(doc, sol) {
   const d = sol.details || {};
   const msa = num(d.msa); const nApp = msa * 1e6;
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...INK);
-  doc.text(doc.splitTextToSize(`Design repetitions N_applied = ${msa.toFixed(2)} x 10^6 standard axles. A criterion passes when CDF = N_applied / N_allowable <= 1.0.`, CONTENT_W), M, y);
-  y += 9;
+  y = textBlock(doc,
+    `Design repetitions N_applied = ${msa.toFixed(2)} x 10^6 standard axles. A criterion passes when CDF = N_applied / N_allowable <= 1.0.`,
+    M, y, CONTENT_W) + 6;
 
   // Reliability the engine actually used (post §3.7 auto-escalation) — the
   // printed coefficients must match the computation, not always the R90 row.
@@ -351,6 +411,7 @@ function compliance(doc, sol) {
   }
   const ok = !!d.overall_adequate;
   const [bg, fg] = ok ? [GREEN_BG, GREEN] : [RED_BG, RED];
+  y = ensureSpace(doc, y, 11); // never let the verdict strip cross the footer
   doc.setFillColor(...bg); doc.setDrawColor(...fg); doc.setLineWidth(0.4); doc.rect(M, y, CONTENT_W, 9, 'FD');
   doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...fg);
   doc.text(ok ? `OVERALL: IRC:37 ADEQUATE - all damage factors <= 1.0 (governed by ${d.governing_mode || '--'}).`
@@ -398,6 +459,9 @@ function clausesAndAlternatives(doc, sol, designs, granularAutoE) {
   });
   y = doc.lastAutoTable.finalY + 8;
 
+  // Heading + table head + at least two rows must fit, or start a new page
+  // (autoTable paginates its own overflow rows after that).
+  y = ensureSpace(doc, y, 40);
   doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(...INK);
   doc.text('5.  Alternative Adequate Designs', M, y); y += 7;
   const first = (designs[0] || {}).optimal_layers || [];
@@ -417,11 +481,15 @@ function clausesAndAlternatives(doc, sol, designs, granularAutoE) {
     columnStyles: { 0: { halign: 'left', cellWidth: 30 } },
   });
   y = doc.lastAutoTable.finalY + 6;
+  y = ensureSpace(doc, y, 10);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7.4); doc.setTextColor(...MUTED);
-  doc.text(doc.splitTextToSize('Disclaimer. IndoPave-37 is a design-aid tool. Results are produced by a mechanistic-empirical analysis per IRC:37-2018/2019 and must be checked and sealed by a qualified pavement engineer before construction.', CONTENT_W), M, y);
+  textBlock(doc, 'Disclaimer. IndoPave-37 is a design-aid tool. Results are produced by a mechanistic-empirical analysis per IRC:37-2018/2019 and must be checked and sealed by a qualified pavement engineer before construction.', M, y, CONTENT_W);
 }
 
-export function generatePdfReport({ projectName, trafficParams, subgradeCbr, selectedSolution, adequateDesigns, airVoids, bitumenVolume, granularAutoE = false }) {
+// Build the report and return the jsPDF document WITHOUT saving — separated
+// from generatePdfReport so the layout can be exercised headlessly (tests /
+// dev-tools can inspect doc.output(...) instead of triggering a download).
+export function buildPdfReport({ projectName, trafficParams, subgradeCbr, selectedSolution, adequateDesigns, airVoids, bitumenVolume, granularAutoE = false }) {
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const sol = selectedSolution || {};
   const traffic = trafficParams || {};
@@ -432,5 +500,9 @@ export function generatePdfReport({ projectName, trafficParams, subgradeCbr, sel
   doc.addPage(); compliance(doc, sol);
   doc.addPage(); clausesAndAlternatives(doc, sol, adequateDesigns || [], granularAutoE);
   headerFooter(doc, doc.getNumberOfPages());
-  doc.save('IndoPave37_Report.pdf');
+  return doc;
+}
+
+export function generatePdfReport(opts) {
+  buildPdfReport(opts).save('IndoPave37_Report.pdf');
 }
