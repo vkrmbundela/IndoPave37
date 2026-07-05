@@ -136,7 +136,21 @@ export default function MaterialPicker({ sharedState, onUpdateLayer }) {
             </div>
 
             {/* Description */}
-            <p className="text-[10px] text-gray-500 mb-3 leading-relaxed line-clamp-2">{mat.description}</p>
+            <p className="text-[10px] text-gray-500 mb-2 leading-relaxed line-clamp-2">{mat.description}</p>
+
+            {/* Temperature curve (IRC Table 9.2) — served by the API for
+                modified binders; previously fetched but never displayed. */}
+            {mat.temperature_table && (
+              <p
+                className="text-[9px] text-gray-400 font-mono mb-2"
+                title="Resilient modulus vs average annual pavement temperature (IRC:37-2018 Table 9.2). The engine interpolates linearly at the design temperature."
+              >
+                {Object.entries(mat.temperature_table)
+                  .sort((a, b) => Number(a[0]) - Number(b[0]))
+                  .map(([t, e]) => `${t}°C: ${e}`)
+                  .join(' · ')}
+              </p>
+            )}
 
             {/* Actions */}
             <div className="flex items-center gap-1.5">

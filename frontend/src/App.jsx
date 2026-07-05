@@ -2079,8 +2079,12 @@ export default function App() {
                     <span className="text-amber-700"> · {Number(sp72Info.esal).toLocaleString()} ESAL (~{sp72Info.msa} MSA)</span>
                     <span className="text-amber-700"> · Subgrade {sp72Info.subgrade_class} ({sp72Info.subgrade_class_name})</span>
                     {sp72Info.surfacing_hint && <span className="text-amber-700"> · Surfacing: {sp72Info.surfacing_hint}</span>}
+                    {/* Full SP:72 advisory list — previously only the last line was
+                        shown, hiding the surfacing/base-thickness guidance. */}
                     {sp72Info.advisory && sp72Info.advisory.length > 0 && (
-                      <div className="mt-0.5 text-[10px] text-amber-800/90">{sp72Info.advisory[sp72Info.advisory.length-1]}</div>
+                      <ul className="mt-0.5 text-[10px] text-amber-800/90 list-disc ml-4 space-y-0.5">
+                        {sp72Info.advisory.map((a, ai) => <li key={ai}>{a}</li>)}
+                      </ul>
                     )}
                   </div>
                 )}
@@ -2201,9 +2205,58 @@ export default function App() {
                                       style={{ width: `${Math.min(100, (d.details?.CDF_ctb || 0) * 100)}%` }}
                                     />
                                   </div>
+                                  {/* Both IRC CTB checks ran — show the split so the engineer
+                                      sees WHICH criterion produced the governing damage. */}
+                                  {d.details?.CDF_ctb_strain != null && d.details?.ctb_details?.CDF_ctb != null && (
+                                    <div className="mt-0.5 text-[8px] text-gray-400 font-mono text-right">
+                                      Eq 3.5: {Number(d.details.CDF_ctb_strain).toFixed(3)} · spectrum CFD (Eq 3.6): {Number(d.details.ctb_details.CDF_ctb).toFixed(3)}
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>
+
+                            {/* Critical mechanistic responses — the strains/stresses IRC:37
+                                actually limits. CDF bars alone hide the primary quantities
+                                an engineer checks against the standard. */}
+                            <div className="flex flex-wrap gap-x-3 gap-y-0.5 px-0.5 text-[9px] font-mono text-gray-500">
+                              {d.details?.eps_t != null && Math.abs(d.details.eps_t) > 1e-12 && (
+                                <span title={`Horizontal tensile strain at the bottom of the bottom bituminous layer (max of |εt|, |εr|). Allowable Nf ≈ ${d.details?.Nf != null && isFinite(d.details.Nf) ? (d.details.Nf / 1e6).toFixed(1) + ' msa' : '—'}.`}>
+                                  ε_t <b className="text-orange-800">{(Math.abs(d.details.eps_t) * 1e6).toFixed(1)}</b> µε
+                                </span>
+                              )}
+                              {d.details?.eps_v != null && (
+                                <span title={`Vertical compressive strain at the top of the subgrade (IRC §3.6.1). Allowable N_R ≈ ${d.details?.NR != null && isFinite(d.details.NR) ? (d.details.NR / 1e6).toFixed(1) + ' msa' : '—'}.`}>
+                                  ε_v <b className="text-red-700">{(Math.abs(d.details.eps_v) * 1e6).toFixed(1)}</b> µε
+                                </span>
+                              )}
+                              {d.details?.sigma_t_ctb != null && (
+                                <span title="Max tensile stress at the bottom of the CTB from the 0.80 MPa solver call (stress-ratio criterion input).">
+                                  σ_t,CTB <b className="text-violet-700">{Math.abs(d.details.sigma_t_ctb).toFixed(3)}</b> MPa
+                                </span>
+                              )}
+                              {d.details?.eps_t_ctb != null && (
+                                <span title={`Tensile strain at the bottom of the CTB (0.80 MPa call). Eq 3.5 allowable ≈ ${d.details?.Nf_ctb_strain != null && isFinite(d.details.Nf_ctb_strain) ? (d.details.Nf_ctb_strain / 1e6).toFixed(0) + ' msa' : '—'}.`}>
+                                  ε_t,CTB <b className="text-violet-700">{(Math.abs(d.details.eps_t_ctb) * 1e6).toFixed(1)}</b> µε
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Optimizer diagnostic: an adequate neighbour that is THINNER in
+                                one layer yet has LOWER governing damage — the thickness→CDF
+                                surface is locally non-monotone (a real layered-elastic effect
+                                worth an engineer's review). Computed by the engine, previously
+                                never surfaced. */}
+                            {Array.isArray(d.details?.non_monotonic_neighbours) && d.details.non_monotonic_neighbours.length > 0 && (
+                              <div
+                                className="text-[9px] rounded border border-amber-200 bg-amber-50 text-amber-800 px-1.5 py-1 leading-snug"
+                                title="Layered-elastic responses are not always monotone in thickness (stiff-layer bending effects). A design one constructable lift THINNER in the listed layer(s) also passes IRC with a lower governing CDF — review whether it suits the project before tendering the thicker section."
+                              >
+                                ⚠ Non-monotonic optimum: {d.details.non_monotonic_neighbours.map(n =>
+                                  `${n.layer_name} −${n.thickness_drop_mm} mm ⇒ CDF ${n.neighbour_cdf}`).join('; ')}
+                                {` (this design ${d.details.non_monotonic_neighbours[0].anchor_cdf})`}
+                              </div>
+                            )}
 
                             {/* Meta & Governing */}
                             <div className="flex justify-between items-center space-x-2">
@@ -2253,13 +2306,37 @@ export default function App() {
                 )}
               </div>
             ) : !optimizationMode && results ? (
-              <table className="w-full min-w-[980px] text-[11px] text-left font-mono border-collapse leading-5">
+              <div className="flex flex-col">
+                {/* Peak-response strip: the solve response's governing maxima
+                    (surface deflection + design strains) were previously
+                    computed but never displayed. ε_h uses max(|ε_t|,|ε_r|),
+                    the quantity the IRC fatigue criterion actually takes. */}
+                {(() => {
+                  const maxDisp = Math.max(0, ...results.map(r => Math.abs(r.disp_z || 0)));
+                  const maxEpsH = Math.max(0, ...results.map(r => Math.max(Math.abs(r.eps_t || 0), Math.abs(r.eps_r || 0))));
+                  const maxEpsZ = Math.max(0, ...results.map(r => Math.abs(r.eps_z || 0)));
+                  return (
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 border-b border-gray-100 bg-orange-50/20 text-[10px] font-mono text-gray-600">
+                      <span className="text-[9px] font-sans font-bold uppercase tracking-wide text-slate-400">Peak responses</span>
+                      <span title="Maximum |δ_z| across the evaluated points (mm)">
+                        δ_z,max <b className="text-slate-800">{maxDisp.toFixed(3)}</b> mm
+                      </span>
+                      <span title="Maximum horizontal tensile strain across the evaluated points, max(|ε_t|, |ε_r|) — the fatigue-governing quantity at the bituminous bottom">
+                        ε_h,max <b className="text-orange-800">{(maxEpsH * 1e6).toFixed(1)}</b> µε
+                      </span>
+                      <span title="Maximum |ε_z| across the evaluated points — rutting-governing at the top of the subgrade">
+                        ε_z,max <b className="text-red-700">{(maxEpsZ * 1e6).toFixed(1)}</b> µε
+                      </span>
+                    </div>
+                  );
+                })()}
+                <table className="w-full min-w-[1050px] text-[11px] text-left font-mono border-collapse leading-5">
                 <thead className="bg-gray-50 text-[10px] text-gray-500 uppercase font-bold sticky top-0 z-20">
                   <tr className="text-[9px] tracking-wide">
                     <th colSpan={2} className="py-1 px-3 border-b border-gray-200 bg-gray-100/70">Location</th>
                     <th colSpan={4} className="py-1 px-3 border-b border-gray-200 bg-gray-100/70">Stress State</th>
                     <th className="py-1 px-3 border-b border-gray-200 bg-gray-100/70">Deflection</th>
-                    <th colSpan={2} className="py-1 px-3 border-b border-gray-200 bg-orange-50 text-orange-800">Failure Checks</th>
+                    <th colSpan={3} className="py-1 px-3 border-b border-gray-200 bg-orange-50 text-orange-800">Failure Checks</th>
                   </tr>
                   <tr>
                     <th className="py-2 px-3 border-b border-gray-200">Z (mm)</th>
@@ -2269,9 +2346,13 @@ export default function App() {
                     <th className="py-2 px-3 border-b border-gray-200">σ_r</th>
                     <th
                       className="py-2 px-3 border-b border-gray-200 cursor-help"
-                      title={"τ_rz — vertical shear stress (MPa). Not used by any IRC:37 design criterion (fatigue uses ε_t, rutting uses ε_z, CTB uses σ_t).\n\nIITPAVE convention note: for a dual wheel evaluated on the symmetry axis (R = spacing/2), the two wheels' shear contributions cancel, so the physically-correct elastic value is ≈ 0 — which is what this solver reports. The original IITPAVE instead reports ≈ 2× the single-wheel shear here, because it superimposes the two wheels without the symmetry sign-flip. The two agree on all design quantities (σ, ε, δ) to <1%; only this non-design shear differs."}
+                      title={"τ_rz — vertical shear stress (MPa). Not used by any IRC:37 design criterion (fatigue uses ε_t/ε_r, rutting uses ε_z, CTB uses σ_t).\n\nIITPAVE convention note: for a dual wheel evaluated on the symmetry axis (R = spacing/2), the two wheels' shear contributions cancel, so the physically-correct elastic value is ≈ 0 — which is what this solver reports. The original IITPAVE instead reports ≈ 2× the single-wheel shear here, because it superimposes the two wheels without the symmetry sign-flip. The two agree on all design quantities (σ, ε, δ) to <1%; only this non-design shear differs."}
                     >τ_rz<span className="text-gray-400 align-super text-[7px] ml-0.5">&#9432;</span></th>
                     <th className="py-2 px-3 border-b border-gray-200">δ_z</th>
+                    <th
+                      className="py-2 px-3 border-b border-orange-200 border-l border-orange-200 bg-orange-50/60 text-orange-700 cursor-help"
+                      title="ε_r — radial horizontal strain. The IRC:37 fatigue criterion uses max(|ε_t|, |ε_r|); under dual wheels at R = 155 mm, ε_r frequently GOVERNS over ε_t. Previously computed but not displayed."
+                    >ε_r<span className="text-gray-400 align-super text-[7px] ml-0.5">&#9432;</span></th>
                     <th className="py-2 px-3 border-b border-orange-200 border-l border-orange-200 bg-orange-50 text-red-700 sticky right-24 z-20">ε_z</th>
                     <th className="py-2 px-3 border-b border-orange-200 border-l border-orange-300 bg-orange-100 text-orange-900 sticky right-0 z-20">ε_t</th>
                   </tr>
@@ -2286,12 +2367,14 @@ export default function App() {
                       <td className="py-1.5 px-3 text-gray-600">{formatSci(r.sigma_r)}</td>
                       <td className="py-1.5 px-3 text-gray-600">{formatSci(r.tau_rz)}</td>
                       <td className="py-1.5 px-3 text-gray-600">{formatSci(r.disp_z)}</td>
+                      <td className="py-1.5 px-3 text-orange-700 bg-orange-50/60 border-l border-orange-200">{formatSci(r.eps_r)}</td>
                       <td className="py-1.5 px-3 font-bold text-red-700 bg-orange-50 border-l border-orange-200 sticky right-24 z-10">{formatSci(r.eps_z)}</td>
                       <td className="py-1.5 px-3 font-bold text-orange-900 bg-orange-100 border-l border-orange-300 sticky right-0 z-10">{formatSci(r.eps_t)}</td>
                     </tr>
                   ))}
                 </tbody>
-              </table>
+                </table>
+              </div>
             ) : isSolving ? (
               <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-2">
                 <div className="flex items-center gap-2">
@@ -2639,7 +2722,13 @@ export default function App() {
           }}
           onClose={() => setShowAdvanced(false)}
           onUpdateLayer={(idx, props) => {
-            if (props.E !== undefined) updateLayer(idx, 'E', props.E);
+            if (props.E !== undefined) {
+              updateLayer(idx, 'E', props.E);
+              // Applying a specific material modulus PINS it — otherwise the
+              // Auto Eq. 7.1 effect would silently overwrite the applied value
+              // on the next render.
+              updateLayer(idx, 'auto_E', false);
+            }
             if (props.nu !== undefined) updateLayer(idx, 'nu', props.nu);
           }}
         />

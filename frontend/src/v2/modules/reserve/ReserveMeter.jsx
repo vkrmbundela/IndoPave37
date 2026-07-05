@@ -21,7 +21,14 @@ function GaugeBar({ label, value, max, color, unit = 'MSA' }) {
   );
 }
 
-function StatusBadge({ reserve }) {
+function StatusBadge({ reserve, isUnbounded }) {
+  // The backend caps mathematical infinities to huge finite numbers for JSON
+  // safety and sets is_unbounded — render the honest "≫" instead of the cap.
+  if (isUnbounded) return (
+    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-green-50 border border-green-200 text-green-700 text-xs font-bold">
+      <ShieldCheck size={13} /> Excellent (capacity ≫ design)
+    </div>
+  );
   if (reserve > 20) return (
     <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-green-50 border border-green-200 text-green-700 text-xs font-bold">
       <ShieldCheck size={13} /> Excellent Reserve (+{reserve.toFixed(0)}%)
@@ -190,7 +197,7 @@ export default function ReserveMeter({ sharedState }) {
             Value engineering — quantify the safety buffer in your design
           </p>
         </div>
-        <StatusBadge reserve={result.reserve_percent} />
+        <StatusBadge reserve={result.reserve_percent} isUnbounded={!!result.is_unbounded} />
       </div>
 
       {!rolesOk && (
@@ -230,7 +237,7 @@ export default function ReserveMeter({ sharedState }) {
           {/* Center label */}
           <div className="absolute inset-0 flex items-center justify-center">
             <span className="text-[11px] font-bold text-gray-800 bg-white/70 px-2 rounded">
-              {result.design_msa.toFixed(1)} MSA → {result.intercept_msa.toFixed(1)} MSA
+              {result.design_msa.toFixed(1)} MSA → {result.is_unbounded ? '≫ (unbounded)' : `${result.intercept_msa.toFixed(1)} MSA`}
             </span>
           </div>
         </div>
@@ -273,15 +280,15 @@ export default function ReserveMeter({ sharedState }) {
           </div>
           <div>
             <p className="text-[10px] text-gray-500">Structural Capacity</p>
-            <p className="text-sm font-bold font-mono text-orange-700">{result.intercept_msa.toFixed(1)}</p>
+            <p className="text-sm font-bold font-mono text-orange-700">{result.is_unbounded ? '≫' : result.intercept_msa.toFixed(1)}</p>
             <p className="text-[9px] text-gray-400">MSA</p>
           </div>
           <div>
             <p className="text-[10px] text-gray-500">Reserve Buffer</p>
             <p className={`text-sm font-bold font-mono ${
-              result.reserve_percent > 20 ? 'text-green-600' :
+              result.is_unbounded || result.reserve_percent > 20 ? 'text-green-600' :
               result.reserve_percent > 5 ? 'text-orange-600' : 'text-red-600'
-            }`}>+{result.reserve_percent.toFixed(0)}%</p>
+            }`}>{result.is_unbounded ? '≫' : `+${result.reserve_percent.toFixed(0)}%`}</p>
             <p className="text-[9px] text-gray-400">surplus</p>
           </div>
         </div>
