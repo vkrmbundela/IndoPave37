@@ -17,7 +17,7 @@
 - **Data Visualization**: **Recharts** (archetype comparison)
 - **Optimization Engine**: **Smart Pavement Search** — deterministic brute-force enumeration of constructable lift sizes + four single-purpose archetypes (Structural / Economy / Sustainable / Premium). Exhaustive over the buildable space, no local-minimum risk, no external dependencies.
 - **Legacy Bridge**: `iitpave_bridge.py` / `legacy_bridge.py` are compatibility shims that route all calls to the native Burmister solver (`solver_facade.py`). No Fortran `.EXE` is invoked.
-- **Engine duplication**: the in-browser (Pyodide) build uses a mirrored copy of the engine under `frontend/public/py/mep_opt/`. Keep it in sync with `python tools/sync_pyodide_copy.py`; `mep_opt/tests/test_backend_sync.py` fails if the two drift.
+- **Engine duplication**: the in-browser (Pyodide) build uses a mirrored copy of the engine under `frontend/public/py/mep_opt/`, plus a top-level `frontend/public/py/burmister.py` used by the browser Evaluate path. Copy every changed engine module to its mirror (`tools/` is git-ignored, so there is no committed sync script); `mep_opt/tests/test_backend_sync.py` fails if any copy drifts.
 
 ---
 
@@ -41,13 +41,13 @@ The optimizer (`SmartPavementSearch` in `optimizer/smart_search.py`) is a **dete
 For each layer, take the discrete *constructable lift sizes* (MoRTH-500-aligned `DEFAULT_LIFT_SCHEDULE`, or a user override) that fall within the layer's thickness bounds. Form the Cartesian product. A typical 4-layer stack yields ~100–300 combinations (a warning fires above 50k).
 
 **Step 2 — IRC / MoRTH pre-filter.**
-Drop combinations that violate the active traffic-tier minimum thicknesses (per-layer minimums + the IRC:37-2018 page-42 CTB bituminous-bundle rule) *before* any solver call. Combinations are then sorted by ascending total thickness (or ₹/km when `optimize_by_cost`).
+Drop combinations that violate minimum thicknesses *before* any solver call. IRC:37-2018 rules are always enforced (CTB > 20 msa → bituminous bundle ≥ 100 mm, §9.2; unbound granular ≥ 150 mm, crack-relief layer ≥ 100 mm, §8.1; stabilised RAP base ≥ 100 mm, §8.4). The traffic-tier MoRTH-practice minimums can be overridden or disabled (`ignore_minimum_thickness`). Combinations are then sorted by ascending total thickness (or ₹/km when `optimize_by_cost`).
 
 **Step 3 — Evaluate each design** through the native Burmister solver:
 - `eps_t` (fatigue) at the **bottom of the bottom bituminous layer**;
 - `eps_v` (rutting) at the **top of the subgrade** (just below the granular/subgrade interface) per IRC:37-2018 §3.6.1;
-- `sigma_t` (CTB fatigue) at the bottom of the CTB layer at 0.80 MPa when a CTB is present (a second solver call).
-A design is **adequate** when all applicable CDFs (fatigue + rutting + CTB) ≤ 1.0. Reliability is auto-escalated R80→R90 for ≥20 msa (IRC §3.7); the fatigue C-factor uses the bottom-mix `Va`/`Vbe`.
+- CTB fatigue at the bottom of the CTB (not a CTSB) at 0.80 MPa: Eq. 3.5 on the largest |ε| (RF = 1 for Expressway/NH/SH/urban roads or ≥ 10 msa, else 2) and, with an axle spectrum, Eq. 3.6/3.7 on the largest |σ| of the radial/tangential components — every class solved exactly, tandems/tridems split into 2/3 single axles, wheel load = single-axle load / 4 (Annex-II II.4).
+Strains/stresses enter the performance equations as absolute values (IRC Table 3.1 note). A design is **adequate** when all applicable CDFs (fatigue + rutting + CTB) ≤ 1.0. Reliability is R90 for Expressway/NH/SH/urban roads at any traffic and for other roads at ≥ 20 msa (IRC §3.7, `road_category`); the fatigue C-factor uses the bottom-mix `Va`/`Vbe`.
 
 **Step 4 — Four archetypes.**
 From the IRC-adequate set (cost and embodied CO₂ are computed for every design), return four single-purpose optima:
@@ -64,7 +64,9 @@ When one design wins several objectives, its labels merge onto a single card (e.
 
 Validated against **IRC:37-2018 Annex-II worked examples**, a recorded run of the original IITPAVE, and legacy benchmark cases (rps1, case2):
 - **Example II.3** (flexible, 131 MSA): native `eps_t` = 146 µε vs IRC 146 (−0.0%); `eps_v` = 245 µε vs IRC 243 (+0.7%).
-- **Example II.4** (CTB): native max tensile stress at CTB bottom = 0.699 MPa vs IRC 0.700.
+- **Example II.4** (CTB): native max tensile stress at CTB bottom = 0.699 MPa vs IRC 0.700; all 12 single-axle class stresses match the IRC table and their damage is 0.48 as published.
+- **Examples II.1 / II.2 / II.5**: effective modulus 105.0 vs 105.1 MPa; GSB strains within 0.4%; RAP-base εt 104.1 vs 104.2 µε (IRC's quoted εv for II.5 is the strain at the top of the CTSB).
+- **Near-surface**: exact against Boussinesq at every depth including z = 0 (top-layer half-space kernel subtracted and integrated in closed form / densely; refined panels for shallow points).
 - **Recorded IITPAVE run**: all stresses, strains and deflection match within ~1% (`mep_opt/tests/test_iitpave_reference.py`).
 - **Compliance**: Automated adequacy checks against IRC:37-2018/2019 fatigue, rutting, and CTB performance equations. Regression suite: `mep_opt/tests/test_irc_annex.py`.
 
@@ -108,8 +110,8 @@ npm run dev
 # Backend Test Suite
 python -m pytest mep_opt/tests/ -v
 
-# Standalone Solver Validation
-python tests/validate_solver.py
+# Audit regression suite (exact solutions + IRC Annex-II examples)
+python -m pytest mep_opt/tests/test_audit_fixes.py -v
 ```
 
 ---
@@ -144,7 +146,7 @@ python tests/validate_solver.py
 
 1. **Design Integrity**: All new components must support both `light` (default) and `.theme-dark` CSS classes. Use the centralized design tokens in `index.css`.
 2. **Solver Dependency**: All structural analysis runs through the native Python Burmister solver (`solver_facade.run_solver`). No external `.EXE` is required on any machine. The browser (Pyodide) build uses the mirrored engine under `frontend/public/py/mep_opt/` — mirror every engine change with `python tools/sync_pyodide_copy.py`.
-3. **Mathematical Accuracy**: Any solver or IRC logic change must be regression-tested against the IRC Annex-II suite (`test_irc_annex.py`) and the benchmark suite (`test_solver.py`). Critical conventions: `eps_v` at top of subgrade (below the interface); `eps_t` at bottom of bottom bituminous layer; granular modulus uncapped Eq. 7.1; subgrade ν = 0.35; dual-wheel standard axle.
+3. **Mathematical Accuracy**: Any solver or IRC logic change must be regression-tested against the IRC Annex-II suites (`test_irc_annex.py`, `test_audit_fixes.py`) and the benchmark suite (`test_solver.py`). Critical conventions: `eps_v` at top of subgrade (below the interface); `eps_t` at bottom of bottom bituminous layer; all bituminous layers analysed with the bottom-mix modulus (§5/§9.2); granular modulus uncapped Eq. 7.1 on the *effective* modulus of everything below (composite for all-unbound stacks, §7.2.3); granular base over CTSB 350/300 MPa, crack-relief layer over CTB 450 MPa, RAP base 800 MPa; geogrid MIF capped at 2.0 (IRC:SP:59 §3.1.3); subgrade ν = 0.35; dual-wheel standard axle.
 4. **Optimized Responses**: Ensure all API responses handle NumPy types correctly using `_to_native()` serialization (NaN/Inf converted to null).
 5. **Input Validation**: All API endpoints use Pydantic `field_validator` constraints. Bad inputs return 422 with specific messages.
 6. **No Placeholders**: Use real data or generated assets for all engineering demonstrations.

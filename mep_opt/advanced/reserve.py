@@ -10,6 +10,7 @@ import math
 from mep_opt.solver.irc37 import (
     find_intercept_msa, ReliabilityLevel,
 )
+from mep_opt.advanced._strain_utils import ADVANCED_SCOPE_NOTE
 
 
 # Map integer reliability values to enum
@@ -101,4 +102,6 @@ def compute_reserve(
         # Surface the unbounded flag explicitly so the UI can render
         # "Excellent (capacity ≫ design)" instead of a giant number.
         "is_unbounded": math.isinf(intercept_msa) or math.isinf(reserve_percent),
+        "reliability": rel.name,
+        "scope": ADVANCED_SCOPE_NOTE,
     }

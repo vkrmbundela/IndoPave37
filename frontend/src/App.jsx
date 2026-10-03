@@ -7,7 +7,10 @@ import { twMerge } from 'tailwind-merge';
 import AdvancedPanel from './v2/AdvancedPanel';
 import { solveAnalysis, runOptimize, onSolverStatus, getSolverMode } from './lib/solver-client';
 import { useResizableTable } from './lib/useResizableTable';
-import { subgradeModulusFromCBR, cumulativeMSA, computeGranularAutoE } from './lib/irc';
+import {
+  subgradeModulusFromCBR, cumulativeMSA, computeGranularAutoE,
+  ROAD_CATEGORIES, requiredReliabilityPercent,
+} from './lib/irc';
 import { generatePdfReport } from './lib/pdf-report';
 
 function ColGrip({ rt, i }) {
@@ -199,10 +202,11 @@ const DEMO_CASES = [
   },
   {
     name: "High-Volume Expressway (Opt)",
+    // Bituminous moduli at the IRC:37-2018 Table 9.2 VG40 maximum (3000 MPa @ 35 °C).
     numLayers: 5,
     layers: [
-      { id: '1', name: 'BC', E: 4500, nu: 0.35, fixed_h: 50, min_h: 30, max_h: 50, is_fixed: true },
-      { id: '2', name: 'DBM', E: 4500, nu: 0.35, fixed_h: 150, min_h: 100, max_h: 250, is_fixed: false },
+      { id: '1', name: 'BC', E: 3000, nu: 0.35, fixed_h: 50, min_h: 30, max_h: 50, is_fixed: true },
+      { id: '2', name: 'DBM', E: 3000, nu: 0.35, fixed_h: 150, min_h: 100, max_h: 250, is_fixed: false },
       { id: '3', name: 'WMM', E: 500, nu: 0.35, fixed_h: 200, min_h: 150, max_h: 300, is_fixed: true },
       { id: '4', name: 'GSB', E: 200, nu: 0.35, fixed_h: 250, min_h: 150, max_h: 300, is_fixed: true },
       { id: '5', name: 'Subgrade', E: 70, nu: 0.35, fixed_h: 0, min_h: 0, max_h: 0, is_fixed: true },
@@ -224,8 +228,8 @@ const DEMO_CASES = [
     name: "Low-Volume Rural Road (PMGSY)",
     numLayers: 3,
     layers: [
-      { id: '1', name: 'Paved Surface', E: 1500, nu: 0.35, fixed_h: 20, min_h: 20, max_h: 40, is_fixed: true },
-      { id: '2', name: 'WMM/GSB', E: 200, nu: 0.35, fixed_h: 225, min_h: 100, max_h: 300, is_fixed: true },
+      { id: '1', name: 'Paved Surface', type: 'SDBC', E: 1500, nu: 0.35, fixed_h: 20, min_h: 20, max_h: 40, is_fixed: true },
+      { id: '2', name: 'WMM/GSB', type: 'WMM', E: 200, nu: 0.35, fixed_h: 225, min_h: 150, max_h: 300, is_fixed: true },
       { id: '3', name: 'Subgrade', E: 45, nu: 0.35, fixed_h: 0, min_h: 0, max_h: 0, is_fixed: true },
     ],
     load: 10000,
@@ -243,8 +247,8 @@ const DEMO_CASES = [
     name: "Urban Arterial (High Stiffness)",
     numLayers: 5,
     layers: [
-      { id: '1', name: 'BC', E: 3500, nu: 0.35, fixed_h: 40, min_h: 30, max_h: 50, is_fixed: true },
-      { id: '2', name: 'DBM', E: 3500, nu: 0.35, fixed_h: 100, min_h: 50, max_h: 250, is_fixed: true },
+      { id: '1', name: 'BC', E: 3000, nu: 0.35, fixed_h: 40, min_h: 30, max_h: 50, is_fixed: true },
+      { id: '2', name: 'DBM', E: 3000, nu: 0.35, fixed_h: 100, min_h: 50, max_h: 250, is_fixed: true },
       { id: '3', name: 'WMM', E: 450, nu: 0.35, fixed_h: 250, min_h: 150, max_h: 300, is_fixed: true },
       { id: '4', name: 'GSB', E: 150, nu: 0.35, fixed_h: 150, min_h: 150, max_h: 300, is_fixed: true },
       { id: '5', name: 'Subgrade', E: 55, nu: 0.35, fixed_h: 0, min_h: 0, max_h: 0, is_fixed: true },
@@ -427,7 +431,8 @@ const MATERIAL_DATABASE = {
   CRL:  { name: 'Granular Crack Relief Layer',    abbr: 'CRL',  default_E: 450,  default_nu: 0.35, category: 'granular' },
   CTB:  { name: 'Cement Treated Base',            abbr: 'CTB',  default_E: 5000, default_nu: 0.25, category: 'cement_treated' },
   CTSB: { name: 'Cement Treated Sub-Base',        abbr: 'CTSB', default_E: 600,  default_nu: 0.25, category: 'cement_treated' },
-  RAP:  { name: 'Reclaimed Asphalt Pavement',     abbr: 'RAP',  default_E: 800,  default_nu: 0.35, category: 'bituminous' },
+  // Emulsion/foam bitumen stabilised RAP BASE (IRC:37-2018 §8.4): 800 MPa, not part of the bituminous bundle.
+  RAP:  { name: 'Stabilised RAP Base (emulsion/foam)', abbr: 'RAP', default_E: 800, default_nu: 0.35, category: 'cold_recycled' },
 };
 const LAYER_TYPE_OPTIONS = Object.keys(MATERIAL_DATABASE);
 // Granular layer types that accept geosynthetic (geogrid) reinforcement.
@@ -440,7 +445,7 @@ const AUTO_E_TYPES = new Set(['WMM', 'WBM', 'GSB', 'CRL']);
 // Resolve the effective material type for a layer: explicit `type` wins; else
 // fall back to `name` when it is itself a known type (legacy use-case data).
 const layerType = (l) => typeof l.type === 'string' ? l.type : (LAYER_TYPE_OPTIONS.includes(l.name) ? l.name : '');
-// IRC:SP:59 / Saride 2021 geogrid options (MIF approach).
+// IRC:SP:59 / Saride et al. 2022 geogrid options (MIF approach, capped at 2.0).
 const GEOGRID_OPTIONS = [
   { id: 'none', label: 'No geogrid' },
   { id: 'PP30', label: 'PP30' },
@@ -468,7 +473,11 @@ const DESIGN_DEFAULTS = {
   designLife: 20,           // years
   ldf: 0.75,                // lane distribution factor
   vdf: 2.5,                 // vehicle damage factor
-  reliabilityPercent: 80,   // R80 (low-volume); optimizer auto-escalates to R90 for ≥20 MSA per IRC:37-2018 §3.7
+  // IRC:37-2018 §3.7 / Eq. 3.5: road category sets the reliability (R90 for
+  // Expressway/NH/SH/urban at any traffic, else R90 only at >= 20 msa) and
+  // the CTB RF factor. National Highway is the conservative default.
+  roadCategory: 'nh',
+  constructionYears: 0,     // x in IRC Eq. 4.6 (count year -> opening year)
 };
 
 /* ─── Compact Cross-Section SVG ─── */
@@ -1097,6 +1106,12 @@ export default function App() {
   const [designLife, setDesignLife] = useState(savedData.designLife ?? DESIGN_DEFAULTS.designLife);
   const [vdf, setVdf] = useState(savedData.vdf ?? DESIGN_DEFAULTS.vdf);
   const [ldf, setLdf] = useState(savedData.ldf ?? DESIGN_DEFAULTS.ldf);
+  const [roadCategory, setRoadCategory] = useState(savedData.roadCategory ?? DESIGN_DEFAULTS.roadCategory);
+  const [constructionYears, setConstructionYears] = useState(savedData.constructionYears ?? DESIGN_DEFAULTS.constructionYears);
+  // Engine moduli of the non-bituminous layers ([{index, E, auto}]) — the
+  // values the optimizer analyses; Evaluate and the advanced panels use them.
+  const [engineGranularE, setEngineGranularE] = useState([]);
+  const [autoEError, setAutoEError] = useState(null);
 
   const [results, setResults] = useState(savedData.results || null);
   // Advisory warnings returned by /api/optimize (reliability escalation,
@@ -1140,7 +1155,7 @@ export default function App() {
       layers, numLayers, load, pressure, wheelType, wheelSpacing, points, numPoints,
       cvpd, subgradeCbr, temperature, airVoids, bitumenVolume, results, optimizationMode,
       optimizedDesigns, hasStarted, previewWidth,
-      growthRate, designLife, vdf, ldf,
+      growthRate, designLife, vdf, ldf, roadCategory, constructionYears,
       materialRates, showRatesPanel,
       showCtbPanel, useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
       optimizeByCost, optimizeByCo2,
@@ -1150,7 +1165,7 @@ export default function App() {
     layers, numLayers, load, pressure, wheelType, wheelSpacing, points, numPoints,
     cvpd, subgradeCbr, temperature, airVoids, bitumenVolume, results, optimizationMode,
     optimizedDesigns, hasStarted, previewWidth,
-    growthRate, designLife, vdf, ldf,
+    growthRate, designLife, vdf, ldf, roadCategory, constructionYears,
     materialRates, showRatesPanel, debugMode,
     showCtbPanel, useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
     optimizeByCost, optimizeByCo2,
@@ -1192,27 +1207,47 @@ export default function App() {
     });
   }, [subgradeCbr]);
 
-  // Auto-modulus for granular layers in "Auto (IRC Eq. 7.1)" mode: keep the
-  // displayed E in sync with the current thicknesses and subgrade CBR. This
-  // is the value Evaluate uses; the optimizer re-derives it server-side for
-  // every candidate thickness (E is sent as null for auto layers). Guarded
-  // (returns prev when nothing changed) so the effect settles in one pass.
+  // Engine-consistent moduli for the non-bituminous layers (IRC Eq. 7.1 with
+  // the §7.2.3 composite rule, effective support per Eq. 6.3, fixed IRC values
+  // over CTB/CTSB, capped geogrid MIF). Auto-mode layers DISPLAY this value;
+  // Evaluate and the advanced panels ANALYSE with it for every such layer, so
+  // all three agree with the optimizer. Debounced: the effective-support case
+  // needs a solver call.
   useEffect(() => {
-    setLayers(prev => {
-      const updates = computeGranularAutoE(prev, numLayers, subgradeCbr);
-      if (!updates.length) return prev;
-      let changed = false;
-      const next = prev.map((l, i) => {
-        const u = updates.find(x => x.index === i);
-        if (u && Math.abs(Number(l.E) - u.E) > 0.05) {
-          changed = true;
-          return { ...l, E: u.E };
-        }
-        return l;
-      });
-      return changed ? next : prev;
-    });
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const updates = await computeGranularAutoE(layers, numLayers, subgradeCbr, solveAnalysis);
+        if (cancelled) return;
+        setAutoEError(null);
+        setEngineGranularE(updates);
+        setLayers(prev => {
+          let changed = false;
+          const next = prev.map((l, i) => {
+            const u = updates.find(x => x.index === i && x.auto);
+            if (u && Math.abs(Number(l.E) - u.E) > 0.05) {
+              changed = true;
+              return { ...l, E: u.E };
+            }
+            return l;
+          });
+          return changed ? next : prev;
+        });
+      } catch (e) {
+        if (!cancelled) setAutoEError(e.message);
+      }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [layers, numLayers, subgradeCbr]);
+
+  // Layers with the engine moduli substituted (what Evaluate / panels analyse).
+  const analysisLayers = layers.map((l, i) => {
+    const u = engineGranularE.find(x => x.index === i);
+    return u ? { ...l, E: u.E } : l;
+  });
+
+  const designMsa = cumulativeMSA({ cvpd, growthRate, designLife, ldf, vdf, constructionYears });
+  const reliabilityPercent = requiredReliabilityPercent(designMsa, roadCategory);
 
   useEffect(() => {
     setPoints(prev => {
@@ -1239,10 +1274,16 @@ export default function App() {
       const targetPressure = isDemo ? overrides.pressure : pressure;
       const targetWheelType = isDemo ? overrides.wheelType : wheelType;
       const targetPoints = isDemo ? overrides.points : points;
+      const targetNum = isDemo ? (overrides.numLayers ?? targetLayers.length) : numLayers;
+      const targetCbr = isDemo ? (overrides.subgradeCbr ?? subgradeCbr) : subgradeCbr;
+      // Analyse with the SAME non-bituminous moduli the optimizer uses
+      // (computed fresh so a pending auto-E update can never race the run).
+      const engineE = await computeGranularAutoE(targetLayers, targetNum, targetCbr, solveAnalysis);
+      const eOf = (l, i) => engineE.find(x => x.index === i)?.E ?? l.E;
 
       const data = await solveAnalysis({
         layers: targetLayers.map((l, i) => ({
-          E: l.E,
+          E: eOf(l, i),
           nu: l.nu,
           h: i === targetLayers.length - 1 ? 0 : (l.is_fixed ? (l.fixed_h || 0) : (l.min_h || 0)),
         })),
@@ -1265,6 +1306,12 @@ export default function App() {
     setIsSolving(true); setError(null); setOptimizedDesigns(null); setResults(null); setOptimizationMode(true);
     setOptimizeWarnings(null);
     try {
+      const untyped = layers.slice(0, Math.max(0, numLayers - 1))
+        .map((l, i) => ({ i, t: layerType(l) }))
+        .filter(x => !x.t);
+      if (untyped.length) {
+        throw new Error(`Select a material type for layer(s) ${untyped.map(x => x.i + 1).join(', ')} before optimizing.`);
+      }
       const parsedCtbSpectrum = useCtbSpectrum ? normalizeCtbAxleSpectrum(ctbSpectrumText) : null;
       const data = await runOptimize({
         layers: layers.map(l=>({
@@ -1290,7 +1337,9 @@ export default function App() {
         design_life: designLife,
         lane_factor: ldf,
         vdf,
-        reliability: `${DESIGN_DEFAULTS.reliabilityPercent}%`,
+        reliability: `${reliabilityPercent}%`,
+        road_category: roadCategory,
+        construction_years: constructionYears,
         wheel_load: load,
         tire_pressure: pressure,
         wheel_type: wheelType,
@@ -1320,7 +1369,7 @@ export default function App() {
     const cfg = {
       layers, numLayers, load, pressure, wheelType, points, numPoints,
       cvpd, subgradeCbr, temperature, airVoids, bitumenVolume, materialRates, showRatesPanel,
-      growthRate, designLife, vdf, ldf,
+      growthRate, designLife, vdf, ldf, roadCategory, constructionYears,
       useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
       optimizeByCost, optimizeByCo2,
     };
@@ -1390,6 +1439,8 @@ export default function App() {
         if (hasValue(d.designLife)) setDesignLife(d.designLife);
         if (hasValue(d.vdf)) setVdf(d.vdf);
         if (hasValue(d.ldf)) setLdf(d.ldf);
+        if (hasValue(d.roadCategory)) setRoadCategory(d.roadCategory);
+        if (hasValue(d.constructionYears)) setConstructionYears(d.constructionYears);
         if (d.materialRates) setMaterialRates(d.materialRates);
         if (hasValue(d.showRatesPanel)) setShowRatesPanel(d.showRatesPanel);
         if (hasValue(d.useCtbSpectrum)) setUseCtbSpectrum(d.useCtbSpectrum);
@@ -1918,9 +1969,19 @@ export default function App() {
               <fieldset className="border border-gray-200 rounded px-2 pt-0.5 pb-1.5 w-56 flex-none">
                 <legend className="text-[10px] font-bold uppercase text-gray-400 tracking-wide px-1">Opt Target · Traffic</legend>
                 <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 col-span-2" title="Road category (IRC:37-2018 §3.7 and Eq. 3.5): Expressway / NH / SH / urban roads use 90% reliability and CTB RF = 1 at any traffic.">
+                    <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">Road</label>
+                    <select value={roadCategory} onChange={e=>setRoadCategory(e.target.value)} className={cn(inp,"flex-1 py-0 min-w-0 cursor-pointer")}>
+                      {ROAD_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-1.5" title="Commercial vehicles per day at the last count (P in IRC Eq. 4.6). Directional volume for a divided carriageway, two-way volume otherwise (IRC:37-2018 §4.6.1); the LDF is applied to it.">
                     <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">CVPD</label>
                     <input type="number" value={cvpd} onChange={e=>setCvpd(Number(e.target.value))} className={cn(inp,"flex-1 py-0 min-w-0")}/>
+                  </div>
+                  <div className="flex items-center gap-1.5" title="Years from the traffic count to completion of construction (x in IRC:37-2018 Eq. 4.6, A = P(1+r)^x). 0 if the CVPD is already the opening-year traffic.">
+                    <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">Yrs→opn</label>
+                    <input type="number" step="0.5" min="0" max="30" value={constructionYears} onChange={e=>setConstructionYears(Math.max(0, Number(e.target.value)))} className={cn(inp,"flex-1 py-0 min-w-0")}/>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <label className="text-[10px] text-gray-500 font-medium w-10 text-right shrink-0">CBR %</label>
@@ -1953,12 +2014,11 @@ export default function App() {
                 </div>
                 <div
                   className="mt-1 flex items-center justify-between rounded bg-orange-50/60 border border-orange-100 px-1.5 py-0.5"
-                  title="Cumulative design traffic N = 365·CVPD·LDF·VDF·((1+r)^n − 1)/r (IRC:37-2018 §4). Reliability auto-escalates R80→R90 at 20 MSA per §3.7."
+                  title="Cumulative design traffic N = 365·A·LDF·VDF·((1+r)^n − 1)/r with A = CVPD·(1+r)^x (IRC:37-2018 Eq. 4.5/4.6). Reliability per §3.7: R90 for Expressway/NH/SH/urban roads or ≥ 20 MSA, else R80."
                 >
                   <span className="text-[9px] font-bold uppercase tracking-wide text-orange-700">Design Traffic</span>
                   <span className="text-[10px] font-mono font-bold text-orange-900">
-                    {cumulativeMSA({ cvpd, growthRate, designLife, ldf, vdf }).toFixed(1)} MSA
-                    {cumulativeMSA({ cvpd, growthRate, designLife, ldf, vdf }) >= 20 ? ' · R90' : ' · R80'}
+                    {designMsa.toFixed(1)} MSA · R{reliabilityPercent}
                   </span>
                 </div>
                 <div className="flex flex-col gap-1 mt-0.5">
@@ -2102,6 +2162,7 @@ export default function App() {
           </div>
           <div className="overflow-auto">
             {error && <div className="m-2 text-red-700 bg-red-50 border border-red-200 p-2 rounded text-xs">{error}</div>}
+            {autoEError && <div className="m-2 text-amber-800 bg-amber-50 border border-amber-200 p-2 rounded text-xs">Layer moduli: {autoEError}</div>}
 
             {optimizationMode && optimizedDesigns ? (
               <div className="p-3">
@@ -2708,7 +2769,7 @@ export default function App() {
                         <div className="border-b border-[var(--hairline)] pb-3">
                           <h4 className="font-bold text-[var(--text-bold)] text-[11px] mb-1">🕸️ Geosynthetic Base Reinforcement (Geogrids)</h4>
                           <p className="text-[11px]">
-                            Enables geogrid interlayers inside granular bases. Applies a **Modulus Improvement Factor (MIF)** of ~1.5× to ~3.5× depending on geogrid type and subgrade modulus (Saride et al. 2021 — a research method aligned with the IRC:SP:59 intent, not an IRC:37 table), allowing thinner structural thickness while maintaining design life.
+                            Enables geogrid interlayers inside granular bases. Applies a **Modulus Improvement Factor (MIF)** from the Saride et al. (2022) research table, depending on geogrid type and subgrade modulus, **capped at 2.0** — the IRC:SP:59-2019 §3.1.3 design maximum for geogrids. The reinforced layer is modelled separately, resting on the effective modulus of the layers below (IRC:37-2018 §8.1). SP:59 requires third-party-validated MIF for the actual product.
                           </p>
                         </div>
 
@@ -2742,7 +2803,7 @@ export default function App() {
       {showAdvanced && (
         <AdvancedPanel
           sharedState={{
-            layers, numLayers, load, pressure, wheelType, wheelSpacing,
+            numLayers, load, pressure, wheelType, wheelSpacing,
             temperature, points, numPoints, cvpd, subgradeCbr,
             airVoids, bitumenVolume,
             results, optimizedDesigns, materialRates,
@@ -2752,7 +2813,11 @@ export default function App() {
             designLife,
             ldf,
             vdf,
-            reliabilityPercent: DESIGN_DEFAULTS.reliabilityPercent,
+            reliabilityPercent,
+            roadCategory,
+            constructionYears,
+            // Analysis moduli (engine-consistent) replace the displayed ones.
+            layers: analysisLayers,
           }}
           onClose={() => setShowAdvanced(false)}
           onUpdateLayer={(idx, props) => {

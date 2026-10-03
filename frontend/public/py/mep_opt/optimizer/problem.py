@@ -4,6 +4,7 @@ from typing import Any, List, Dict, Tuple, Optional, Union
 
 from mep_opt.solver.irc37 import (
     TrafficInput, SubgradeInput, ReliabilityLevel, BitumenGrade, AxleLoadGroup,
+    normalize_road_category,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,9 +32,16 @@ DEFAULT_LIFT_SCHEDULE: Dict[str, List[float]] = {
     # Cement-treated layers
     "CTB":  [100, 150, 200, 250],
     "CTSB": [100, 150, 200, 250],
-    # Recycled
+    # Emulsion/foam bitumen stabilised RAP base (IRC:37-2018 §8.4: >= 100 mm)
     "RAP":  [100, 150, 200],
 }
+
+# Layer types the engine models (IRC:37-2018 compositions, Figs. 3.1-3.6).
+# Anything else is rejected instead of being silently left out of the
+# structural analysis.
+BITUMINOUS_LAYER_TYPES = frozenset({"BC", "DBM", "BM", "SDBC", "SMA"})
+BASE_SUBBASE_LAYER_TYPES = frozenset({"WMM", "WBM", "GSB", "CRL", "CTB", "CTSB", "RAP"})
+KNOWN_LAYER_TYPES = BITUMINOUS_LAYER_TYPES | BASE_SUBBASE_LAYER_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +78,11 @@ class OptimizationProblem:
     traffic: TrafficInput
     subgrade: SubgradeInput
     reliability: ReliabilityLevel = ReliabilityLevel.R90
+    # IRC:37-2018 §3.7 / Eq. 3.5: Expressway / NH / SH / urban roads need 90 %
+    # reliability and RF = 1 irrespective of traffic ("expressway", "nh",
+    # "sh", "urban", "other"). The requested reliability is escalated when
+    # IRC requires it, never lowered.
+    road_category: str = "other"
     lane_width_m: float = 3.5
     temperature: float = 35.0   # Pavement temperature (deg C) for modulus lookup
 
@@ -165,6 +178,10 @@ class OptimizationProblem:
         if self.layer_types is None:
             self.layer_types = ["BC", "DBM", "WMM", "GSB"]
 
+        self.road_category = normalize_road_category(self.road_category)
+        self._validate_layer_types()
+        self._validate_inputs()
+
         if self.thickness_bounds is None:
             self.thickness_bounds = {
                 "BC": (30, 50),
@@ -212,6 +229,58 @@ class OptimizationProblem:
             }
 
         self._validate_ctb_crack_relief()
+
+    def _validate_layer_types(self) -> None:
+        """Every layer must be a modelled type, and the bituminous bundle on top."""
+        if not self.layer_types:
+            raise ValueError("At least one pavement layer is required")
+        unknown = [lt for lt in self.layer_types if lt not in KNOWN_LAYER_TYPES]
+        if unknown:
+            raise ValueError(
+                f"Unknown layer type(s) {unknown}. Supported: {sorted(KNOWN_LAYER_TYPES)} "
+                f"(upper-case codes)."
+            )
+        if len(set(self.layer_types)) != len(self.layer_types):
+            raise ValueError(f"Duplicate layer types are not allowed: {self.layer_types}")
+        # IRC compositions place the bituminous layers on top; the solver stack
+        # is assembled in that order, so a bituminous layer below a base would
+        # otherwise be silently moved.
+        seen_base = False
+        for lt in self.layer_types:
+            if lt in BITUMINOUS_LAYER_TYPES and seen_base:
+                raise ValueError(
+                    f"Bituminous layer {lt} sits below a base/sub-base layer; the "
+                    f"bituminous layers must form the top of the pavement {self.layer_types}."
+                )
+            if lt in BASE_SUBBASE_LAYER_TYPES:
+                seen_base = True
+
+    def _validate_inputs(self) -> None:
+        if not (1.0 <= float(self.air_voids) <= 12.0):
+            raise ValueError("air_voids (Va, %) must be between 1 and 12")
+        if not (5.0 <= float(self.bitumen_volume) <= 20.0):
+            raise ValueError("bitumen_volume (Vbe, %) must be between 5 and 20")
+        if not (self.wheel_load > 0):
+            raise ValueError("wheel_load must be > 0 N")
+        if not (self.tire_pressure > 0):
+            raise ValueError("tire_pressure must be > 0 MPa")
+        # None is accepted for legacy callers (the optimizer falls back to a
+        # single wheel, as before); anything else must be Single or Dual.
+        wt = str(self.wheel_type).lower() if self.wheel_type is not None else "single"
+        if wt not in ("single", "dual"):
+            raise ValueError("wheel_type must be 'Single' or 'Dual'")
+        if wt == "dual" and not (self.wheel_spacing > 0):
+            raise ValueError("wheel_spacing must be > 0 mm for dual wheels")
+        if not (self.lane_width_m > 0):
+            raise ValueError("lane_width_m must be > 0")
+        for lt, props in (self.layer_props or {}).items():
+            props = props or {}
+            E = props.get("E")
+            if E is not None and not (E > 0):
+                raise ValueError(f"layer_props[{lt!r}]['E'] must be > 0 MPa (got {E!r})")
+            nu = props.get("nu")
+            if nu is not None and not (0.0 <= nu < 0.5):
+                raise ValueError(f"layer_props[{lt!r}]['nu'] must be in [0, 0.5) (got {nu!r})")
 
     # ------------------------------------------------------------------
     # IRC 37:2018 §8.3 / page 28 — crack relief between CTB and bituminous

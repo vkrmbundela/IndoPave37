@@ -237,9 +237,11 @@ function designBasis(doc, traffic, cbr, sol, mix) {
   // Prefer the reliability the ENGINE actually used (post §3.7 escalation,
   // reported on the solution details); fall back to the MSA heuristic.
   const relUsed = d.reliability || (msa >= 20 ? 'R90' : 'R80');
+  const CAT = { nh: 'National Highway', sh: 'State Highway', expressway: 'Expressway', urban: 'Urban road', other: 'Other road' };
+  const catLabel = CAT[d.road_category] || null;
   const rel = relUsed === 'R90'
-    ? '90% (mandatory >= 20 MSA)'
-    : '80% (low-volume, < 20 MSA)';
+    ? (msa >= 20 ? '90% (>= 20 MSA)' : `90% (${catLabel || 'important road'})`)
+    : `80% (${catLabel || 'other road'}, < 20 MSA)`;
   y = sectionHeading(doc, y, 'Reliability & Mix', 'IRC:37-2018 Sec 3.7, 3.6.2');
   const va = num(mix?.airVoids, num(d.air_voids, 3));
   const vbe = num(mix?.bitumenVolume, num(d.bitumen_volume, 11.5));
@@ -395,15 +397,17 @@ function compliance(doc, sol) {
     const cdfC = num(d.CDF_ctb);
     const cdfCs = d.CDF_ctb_strain != null ? num(d.CDF_ctb_strain) : null;
     const hasSpectrum = !!(d.ctb_details && d.ctb_details.details && d.ctb_details.details.length);
-    const rf = relUsed === 'R90' ? '1' : '2';
+    // RF is set by road category and traffic (IRC:37-2018 Eq. 3.5), not by
+    // the reliability level — print the value the engine used.
+    const rf = d.ctb_rf != null ? String(d.ctb_rf) : '--';
     const rows = [['Quantity', 'Computed', 'Limit', 'CDF (<=1.0)']];
     if (d.eps_t_ctb != null) rows.push(['et (bottom of CTB, 0.80 MPa)', ue(d.eps_t_ctb), '--', '']);
     if (d.sigma_t_ctb != null) rows.push(['sigma_t (bottom of CTB, 0.80 MPa)', `${Math.abs(num(d.sigma_t_ctb)).toFixed(3)} MPa`, '--', '']);
     if (cdfCs != null) rows.push(['Strain criterion (Eq 3.5)', '', '<= 1.0', cdfCs.toFixed(3)]);
     if (hasSpectrum) rows.push(['Stress-ratio CFD over spectrum (Eq 3.6)', '', '<= 1.0', num(d.ctb_details.CDF_ctb).toFixed(3)]);
     rows.push(['Governing CTB fatigue damage', '', '<= 1.0', cdfC.toFixed(3)]);
-    y = criterion(doc, y, 'Cement-Treated Base (CTB) Fatigue', 'IRC:37 Sec 3.5 - Eq 3.5' + (hasSpectrum ? ' & 3.6' : ''),
-      `N = RF.[(113000/E^0.804 + 191)/et]^12 with RF = ${rf} (${relPct} reliability)` +
+    y = criterion(doc, y, 'Cement-Treated Base (CTB) Fatigue', 'IRC:37 Sec 3.6.3 - Eq 3.5' + (hasSpectrum ? ' & 3.6' : ''),
+      `N = RF.[(113000/E^0.804 + 191)/et]^12 with RF = ${rf}` +
       (hasSpectrum
         ? '; plus N = 10^((0.972 - SR)/0.0825), SR = sigma_t/MRup, over the axle spectrum'
         : '   (stress-ratio spectrum check not run - no axle spectrum supplied)'),

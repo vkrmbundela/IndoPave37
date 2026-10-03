@@ -30,9 +30,31 @@ Reference:
 """
 
 import numpy as np
-from scipy.special import j0 as bessel_j0, j1 as bessel_j1
+from scipy.special import j0 as bessel_j0, j1 as bessel_j1, ellipe, ellipk
 from dataclasses import dataclass
 from typing import List
+
+# ---------------------------------------------------------------------------
+# Near-surface quadrature controls
+# ---------------------------------------------------------------------------
+# The Hankel integrands decay like exp(-m*z). The fixed IITPAVE-style interval
+# scheme (cut-off m = 60/a) is converged only once z is a sizeable fraction of
+# the contact radius a; closer to the surface it truncates and aliases the
+# slowly-decaying integrand (sigma_z was +140% at z = 1 mm, surface deflection
+# +3%). Shallow points therefore use (a) subtraction of the top layer's
+# half-space kernel, whose integral is evaluated exactly, and (b) refined
+# panels extended until exp(-m*z_decay) is negligible.
+_NEAR_SURFACE_FACTOR = 0.75   # z_decay < 0.75*a -> refined treatment
+_DECAY_TARGET = 40.0          # integrate until m*z_decay >= 40 (e^-40 ~ 4e-18)
+_REFINED_PANEL = 2.0          # refined panel width = 2 / max(a, r)  [1/mm]
+SURFACE_Z_TOL = 0.5           # mm: shallower points are evaluated at z = 0
+# Interface bond is modelled as either fully bonded or frictionless; partial
+# bond (e.g. Goodman interface springs) is not implemented, so intermediate
+# friction factors are rejected rather than silently rounded.
+_BONDED_MIN = 0.999
+_UNBONDED_MAX = 1e-9
+
+_GL8_N, _GL8_W = np.polynomial.legendre.leggauss(8)
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +279,92 @@ def _eval_state_halfspace(m, z_loc, E_n, nu_n, coeffs):
     return M @ coeffs
 
 
+def _validate_inputs(layers: List[LayerProperty], load: LoadConfig) -> None:
+    """Reject physically meaningless input before it reaches the linear algebra."""
+    if not layers:
+        raise ValueError("At least one layer (the subgrade half-space) is required")
+    for i, lay in enumerate(layers):
+        if not np.isfinite(lay.modulus) or lay.modulus <= 0:
+            raise ValueError(f"Layer {i + 1}: modulus must be > 0 MPa (got {lay.modulus!r})")
+        if not np.isfinite(lay.poisson) or not (0.0 <= lay.poisson < 0.5):
+            raise ValueError(f"Layer {i + 1}: Poisson's ratio must be in [0, 0.5) (got {lay.poisson!r})")
+        if i < len(layers) - 1:
+            if not np.isfinite(lay.thickness) or lay.thickness < 0:
+                raise ValueError(f"Layer {i + 1}: thickness must be >= 0 mm (got {lay.thickness!r})")
+            f = lay.friction_factor
+            if not (f >= _BONDED_MIN or f <= _UNBONDED_MAX) or f < 0 or f > 1:
+                raise ValueError(
+                    f"Layer {i + 1}: friction_factor must be 1 (fully bonded) or 0 "
+                    f"(frictionless); partial bond is not modelled (got {f!r})"
+                )
+    if not np.isfinite(load.load) or load.load <= 0:
+        raise ValueError(f"Wheel load must be > 0 N (got {load.load!r})")
+    if not np.isfinite(load.pressure) or load.pressure <= 0:
+        raise ValueError(f"Contact pressure must be > 0 MPa (got {load.pressure!r})")
+    if load.is_dual and (not np.isfinite(load.spacing) or load.spacing <= 0):
+        raise ValueError(f"Dual wheels need a positive spacing (got {load.spacing!r})")
+
+
+def _halfspace_kernel_vec(m, z, q, a, E, nu):
+    """
+    Closed-form Hankel kernels [uz, ur, sigz, tau] of a homogeneous half-space
+    (E, nu) under the uniform circular load (q, a), at depth z, for an array of
+    Hankel parameters m. Same sign convention as the layered solver: obtained
+    from the A/D half-space solution with sigz(0) = -q_hat, tau(0) = 0, which
+    gives D = q_hat/(2*G*m) and A = -(1 - 2*nu)*D.
+    """
+    G = E / (2.0 * (1.0 + nu))
+    q_hat = q * a * bessel_j1(m * a) / m
+    D = q_hat / (2.0 * G * m)
+    mz = m * z
+    e = np.exp(-mz)
+    uz = D * (2.0 * (1.0 - nu) + mz) * e
+    ur = D * (-(1.0 - 2.0 * nu) + mz) * e
+    sz = -q_hat * (1.0 + mz) * e
+    tau = -q_hat * mz * e
+    return uz, ur, sz, tau
+
+
+def _halfspace_surface_closed_form(r, q, a, E, nu):
+    """
+    Exact surface (z = 0) response of a homogeneous half-space under a uniform
+    circular load (Boussinesq / Love). Returns (uz, ur, sigz, sigr, sigt, tau).
+    uz uses complete elliptic integrals (scipy parameter convention m = k^2);
+    ur is the classical (1 - 2nu)(1 + nu) q / (2E) radial movement. sigr and
+    sigt follow from the surface strains with sigz prescribed (at r = a the
+    one-sided limits are averaged).
+    """
+    G = E / (2.0 * (1.0 + nu))
+    lam = 2.0 * G * nu / (1.0 - 2.0 * nu)
+    C = (1.0 - 2.0 * nu) * (1.0 + nu) * q / (2.0 * E)
+    r = abs(float(r))
+    tol = 1e-9 * a
+    if r < a - tol:
+        uz = 4.0 * (1.0 - nu ** 2) * q * a / (np.pi * E) * ellipe((r / a) ** 2)
+        ur = -C * r
+        sz = -q
+        er = -C
+        et = -C
+    elif r > a + tol:
+        k2 = (a / r) ** 2
+        uz = 4.0 * (1.0 - nu ** 2) * q * r / (np.pi * E) * (ellipe(k2) - (1.0 - k2) * ellipk(k2))
+        ur = -C * a * a / r
+        sz = 0.0
+        er = C * a * a / (r * r)
+        et = -C * a * a / (r * r)
+    else:  # load edge: average the one-sided limits
+        uz = 4.0 * (1.0 - nu ** 2) * q * a / (np.pi * E)
+        ur = -C * a
+        sz = -0.5 * q
+        er = 0.0
+        et = -C
+    ez = (sz - lam * (er + et)) / (lam + 2.0 * G)
+    theta = er + et + ez
+    sr = lam * theta + 2.0 * G * er
+    st = lam * theta + 2.0 * G * et
+    return uz, ur, sz, sr, st, 0.0
+
+
 # ---------------------------------------------------------------------------
 # Solver
 # ---------------------------------------------------------------------------
@@ -279,6 +387,11 @@ class BurmisterSolver:
     """
 
     def __init__(self, layers: List[LayerProperty], load: LoadConfig):
+        _validate_inputs(layers, load)
+        # A zero-thickness finite layer carries no material; keeping it would
+        # put two interfaces at the same depth (and make the near-surface
+        # decay length 2*h1 - z collapse to zero). Drop it.
+        layers = [l for l in layers[:-1] if l.thickness > 0] + [layers[-1]]
         self.layers = layers
         self.load = load
         self.n_layers = len(layers)
@@ -314,6 +427,19 @@ class BurmisterSolver:
         the wheel line, so no stress rotation is needed:
           sigma_r (longitudinal) = sigma_r_w1 + sigma_r_w2
           sigma_t (transverse)   = sigma_t_w1 + sigma_t_w2
+
+        SHEAR (tau_rz) — convention note vs. the original IITPAVE:
+          The vertical shear is a VECTOR in the radial direction, so the two
+          wheels' contributions carry opposite signs about the symmetry axis
+          and are combined WITH a sign-flip (s1, s2 below). On the symmetry
+          axis (r = S/2) they cancel to ~0, which is the physically-correct
+          elastic value. The original IITPAVE instead sums the two wheels'
+          shear WITHOUT the sign-flip, so it reports ~2x the single-wheel
+          shear at the axis. This affects ONLY tau_rz (a non-design quantity);
+          all IRC criteria use sigma_z/sigma_t/eps_z/eps_t, which are scalar
+          superpositions and match IITPAVE to <1%. The dashboard surfaces this
+          difference in a tooltip on the tau_rz column. We keep the physically
+          correct value here rather than reproduce the IITPAVE summation.
         """
         S = self.load.spacing
         results = []
@@ -358,6 +484,14 @@ class BurmisterSolver:
           2. Solve for coefficients
           3. Evaluate state at the point
           4. Accumulate Hankel inversion integrals
+
+        Deep points (decay length >= 0.75a) use the IITPAVE-style interval
+        scheme unchanged. Points in the TOP layer shallower than 0.75a split
+        the kernel into (layered - top-layer half-space), which decays like
+        exp(-m(2h1 - z)) and is integrated numerically, plus the half-space
+        part, integrated exactly (closed form at the surface, dense vectorised
+        quadrature below it). Shallow points in deeper layers (thin top
+        layer) use refined panels extended until exp(-m z) is negligible.
         """
         li = self._get_layer_index(z)
         E_l, nu_l = self.E[li], self.nu[li]
@@ -366,53 +500,36 @@ class BurmisterSolver:
         L2G_l = lam_l + 2.0 * G_l
 
         z_local = z if li == 0 else z - self.z_interfaces[li]
+        a = self.a
+        q = self.load.pressure
 
-        I_uz = I_ur = I_sz = I_trz = I_sr = I_st = 0.0
+        if li == 0 and z < _NEAR_SURFACE_FACTOR * a:
+            z_eval = 0.0 if z < SURFACE_Z_TOL else float(z)
+            sums = np.zeros(6)
+            if self.n_layers > 1:
+                h1 = self.layers[0].thickness
 
-        for (m_lo, m_hi, nodes, weights) in self._get_intervals():
-            cen = 0.5 * (m_lo + m_hi)
-            hlf = 0.5 * (m_hi - m_lo)
-            for i in range(len(nodes)):
-                mv = cen + hlf * nodes[i]
-                if mv <= 0:
-                    continue
-                w = hlf * weights[i]
+                def diff_kernel(m):
+                    st = self._kernel_at_m(m, 0, z_eval)
+                    if st is None:
+                        return None
+                    hs = _halfspace_kernel_vec(m, z_eval, q, a, E_l, nu_l)
+                    return np.asarray(st, dtype=float) - np.asarray(hs, dtype=float)
 
-                state = self._kernel_at_m(mv, li, z_local)
-                if state is None:
-                    continue
+                sums += self._integrate(diff_kernel, r, 2.0 * h1 - z_eval,
+                                        lam_l, G_l, L2G_l)
+            if z_eval == 0.0:
+                uz, ur, sz, sr, st, trz = _halfspace_surface_closed_form(r, q, a, E_l, nu_l)
+                sums += np.array([uz, ur, sz, trz, sr, st])
+            else:
+                m, w = self._refined_nodes(r, z_eval)
+                hs = _halfspace_kernel_vec(m, z_eval, q, a, E_l, nu_l)
+                sums += self._hankel_sums(m, w, *hs, r, lam_l, G_l, L2G_l)
+        else:
+            sums = self._integrate(lambda m: self._kernel_at_m(m, li, z_local),
+                                   r, z, lam_l, G_l, L2G_l)
 
-                uz_m, ur_m, sigz_m, tau_m = state
-
-                mr = mv * r
-                j0v = bessel_j0(mr)
-                j1v = bessel_j1(mr)
-                j1_mr = j1v / mr if mr > 1e-10 else 0.5
-
-                fac = mv * w
-                I_uz += uz_m * j0v * fac
-                I_ur += ur_m * j1v * fac
-                I_sz += sigz_m * j0v * fac
-                I_trz += tau_m * j1v * fac
-
-                # sigma_r and sigma_t from constitutive relations
-                # Recover duz/dz from sigz: sigz = L2G*duz/dz + lam*m*ur
-                # => duz/dz = (sigz - lam*m*ur) / L2G
-                duz_dz_m = (sigz_m - lam_l * mv * ur_m) / L2G_l
-
-                # Volumetric strain: theta = duz/dz + m*ur (in Hankel domain)
-                theta = duz_dz_m + mv * ur_m
-
-                # sigma_r in physical: needs both J0 and J1/r terms
-                # sigma_r = lam*theta + 2G*(dur/dr)
-                # In Hankel: dur/dr part -> m*ur for J0 term, -ur for J1/r term
-                sr_j0 = lam_l * theta + 2.0 * G_l * mv * ur_m
-                sr_j1r = -2.0 * G_l * ur_m
-                st_j0 = lam_l * theta
-                st_j1r = 2.0 * G_l * ur_m
-
-                I_sr += (sr_j0 * j0v + sr_j1r * mv * j1_mr) * fac
-                I_st += (st_j0 * j0v + st_j1r * mv * j1_mr) * fac
+        I_uz, I_ur, I_sz, I_trz, I_sr, I_st = (float(v) for v in sums)
 
         # Strains from Hooke's law
         eps_z = (I_sz - nu_l * (I_sr + I_st)) / E_l
@@ -425,6 +542,87 @@ class BurmisterSolver:
             tau_rz=I_trz, disp_z=I_uz, disp_r=I_ur,
             eps_z=eps_z, eps_r=eps_r, eps_t=eps_t,
         )
+
+    def _integrate(self, kernel_fn, r, z_decay, lam, G, L2G):
+        """Hankel-invert kernel_fn(m) -> [uz, ur, sigz, tau] at radius r."""
+        if z_decay >= _NEAR_SURFACE_FACTOR * self.a:
+            ms, ws = [], []
+            for (m_lo, m_hi, nodes, weights) in self._get_intervals():
+                cen = 0.5 * (m_lo + m_hi)
+                hlf = 0.5 * (m_hi - m_lo)
+                ms.append(cen + hlf * nodes)
+                ws.append(hlf * weights)
+            m_all = np.concatenate(ms)
+            w_all = np.concatenate(ws)
+        else:
+            m_all, w_all = self._refined_nodes(r, z_decay)
+
+        keep_m, keep_w, states = [], [], []
+        for mv, w in zip(m_all, w_all):
+            if mv <= 0:
+                continue
+            state = kernel_fn(mv)
+            if state is None:
+                continue
+            keep_m.append(mv)
+            keep_w.append(w)
+            states.append(state)
+        if not states:
+            return np.zeros(6)
+        S = np.asarray(states, dtype=float)
+        return self._hankel_sums(np.asarray(keep_m), np.asarray(keep_w),
+                                 S[:, 0], S[:, 1], S[:, 2], S[:, 3], r, lam, G, L2G)
+
+    def _refined_nodes(self, r, z_decay):
+        """
+        GL8 panels out to exp(-m z_decay) ~ e^-40. Near m = 0 the layered
+        kernel varies on the scale 1/(total structure depth), so panels start
+        at 0.1/H and grow geometrically (x1.5) up to the oscillation limit
+        2/max(a, r) (about a third of a J0/J1 period), which is then kept.
+        """
+        a = self.a
+        m_max = max(60.0 / a, _DECAY_TARGET / max(z_decay, 1e-9))
+        depth_scale = max(a, self.z_interfaces[-1], z_decay)
+        w_cap = _REFINED_PANEL / max(a, abs(r))
+        width = min(w_cap, 0.1 / depth_scale)
+        edges = [0.0]
+        while edges[-1] < m_max:
+            edges.append(edges[-1] + width)
+            width = min(w_cap, 1.5 * width)
+        lo = np.asarray(edges[:-1])
+        hw = 0.5 * np.diff(edges)
+        m = ((lo + hw)[:, None] + hw[:, None] * _GL8_N[None, :]).ravel()
+        w = (hw[:, None] * _GL8_W[None, :]).ravel()
+        return m, w
+
+    @staticmethod
+    def _hankel_sums(m, w, uz_m, ur_m, sigz_m, tau_m, r, lam, G, L2G):
+        """
+        Vectorised Hankel inversion of the state kernels. Returns
+        [uz, ur, sigma_z, tau_rz, sigma_r, sigma_t] at radius r.
+        sigma_r / sigma_t are recovered from the constitutive relations:
+          duz/dz = (sigz - lam*m*ur)/L2G,  theta = duz/dz + m*ur,
+          sigma_r = (lam*theta + 2G*m*ur) J0 - 2G*ur*J1/r,
+          sigma_t = lam*theta*J0 + 2G*ur*J1/r.
+        """
+        mr = m * r
+        j0v = bessel_j0(mr)
+        j1v = bessel_j1(mr)
+        safe = mr > 1e-10
+        j1_mr = np.where(safe, j1v / np.where(safe, mr, 1.0), 0.5)
+        fac = m * w
+        duz_dz = (sigz_m - lam * m * ur_m) / L2G
+        theta = duz_dz + m * ur_m
+        sr_k = (lam * theta + 2.0 * G * m * ur_m) * j0v - 2.0 * G * ur_m * m * j1_mr
+        st_k = lam * theta * j0v + 2.0 * G * ur_m * m * j1_mr
+        return np.array([
+            np.sum(uz_m * j0v * fac),
+            np.sum(ur_m * j1v * fac),
+            np.sum(sigz_m * j0v * fac),
+            np.sum(tau_m * j1v * fac),
+            np.sum(sr_k * fac),
+            np.sum(st_k * fac),
+        ])
 
     # ------------------------------------------------------------------
     # Integration intervals (matching IITPAVE structure)
@@ -537,13 +735,13 @@ class BurmisterSolver:
                     # Continuity: state_bot(i) = state_top(i+1)
                     friction = self.layers[iface].friction_factor
                     
-                    if friction >= 0.999: # Fully bonded
+                    if friction >= _BONDED_MIN:  # fully bonded
                         for comp in range(4):
                             A_mat[row, ci_above:ci_above+4] = M_bot[comp, :]
                             A_mat[row, ci_below:ci_below+4] = -M_top_below[comp, :]
                             b_vec[row] = 0.0
                             row += 1
-                    else: # Fully unbonded (friction == 0)
+                    else:  # frictionless (friction == 0; partial bond rejected upstream)
                         # uz continuous
                         A_mat[row, ci_above:ci_above+4] = M_bot[0, :]
                         A_mat[row, ci_below:ci_below+4] = -M_top_below[0, :]
@@ -573,7 +771,7 @@ class BurmisterSolver:
                     ci_below = idx_hs()
                     friction = self.layers[iface].friction_factor
 
-                    if friction >= 0.999:
+                    if friction >= _BONDED_MIN:
                         for comp in range(4):
                             A_mat[row, ci_above:ci_above+4] = M_bot[comp, :]
                             A_mat[row, ci_below:ci_below+2] = -M_hs_top[comp, :]

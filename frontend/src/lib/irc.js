@@ -37,14 +37,16 @@ export function bottomBituminousModulus(layers, numLayers) {
   return mod ?? (Number(layers[0]?.E) || 1250);
 }
 
-// Cumulative design traffic in MSA (IRC:37-2018 §4 / cumulative_msa()):
+// Cumulative design traffic in MSA (IRC:37-2018 Eq. 4.5 / 4.6, cumulative_msa()):
+//   A = P (1+r)^x   (P = CVPD at the last count, x = years to completion)
 //   N = 365 * A * D * F * ((1+r)^n - 1) / r  / 1e6
-// where A = CVPD, D = lane distribution factor, F = VDF, r = growth, n = life.
+// where D = lane distribution factor, F = VDF, r = growth, n = life.
 // The advanced panels previously fed raw CVPD in as "MSA", which massively
 // over-states the traffic (e.g. 800 CVPD -> "800 MSA").
-export function cumulativeMSA({ cvpd, growthRate = 0.05, designLife = 20, ldf = 0.75, vdf = 2.5 }) {
-  const A = Number(cvpd) || 0;
+export function cumulativeMSA({ cvpd, growthRate = 0.05, designLife = 20, ldf = 0.75, vdf = 2.5, constructionYears = 0 }) {
   const r = Number(growthRate);
+  const x = Number(constructionYears) || 0;
+  const A = (Number(cvpd) || 0) * Math.pow(1 + r, x);
   const n = Number(designLife) || 0;
   const D = Number(ldf);
   const F = Number(vdf);
@@ -53,27 +55,91 @@ export function cumulativeMSA({ cvpd, growthRate = 0.05, designLife = 20, ldf = 
 }
 
 // ---------------------------------------------------------------------------
+// Road category (IRC:37-2018 §3.7 and Eq. 3.5) — mirrors irc37.py.
+// ---------------------------------------------------------------------------
+export const ROAD_CATEGORIES = [
+  { id: 'nh', label: 'National Highway' },
+  { id: 'sh', label: 'State Highway' },
+  { id: 'expressway', label: 'Expressway' },
+  { id: 'urban', label: 'Urban road' },
+  { id: 'other', label: 'Other (MDR / ODR / VR)' },
+];
+const IMPORTANT_ROADS = new Set(['expressway', 'nh', 'sh', 'urban']);
+
+// 90 % for Expressways / NH / SH / urban roads at any traffic, and for every
+// other road at >= 20 msa; 80 % otherwise (IRC:37-2018 §3.7).
+export function requiredReliabilityPercent(msa, roadCategory) {
+  return IMPORTANT_ROADS.has(roadCategory) || Number(msa) >= 20 ? 90 : 80;
+}
+
+// RF of IRC:37-2018 Eq. 3.5: 1 for important roads or >= 10 msa, else 2.
+export function ctbReliabilityFactor(msa, roadCategory) {
+  return IMPORTANT_ROADS.has(roadCategory) || Number(msa) >= 10 ? 1 : 2;
+}
+
+// ---------------------------------------------------------------------------
 // Geogrid Modulus Improvement Factor — mirrors mep_opt/solver/geosynthetic.py
-// (Saride et al. 2021 MIF table; linear interpolation, clamped outside range).
+// Saride et al. (2022) research table: linear interpolation, first value held
+// below the table, last segment extrapolated (never below 1.0) above it, and
+// the result capped at the IRC:SP:59-2019 §3.1.3 design maximum of 2.0.
 // ---------------------------------------------------------------------------
 const MIF_TABLE = {
   PP30:  [[10, 3.13], [30, 1.88], [50, 1.60], [70, 1.50]],
   PET30: [[10, 3.50], [30, 2.06], [50, 1.80]],
   PET60: [[30, 2.25], [50, 2.00]],
 };
+export const SP59_GEOGRID_MIF_MAX = 2.0;
 
-export function getMif(subgradeModulus, geogridType) {
+export function researchMif(subgradeModulus, geogridType) {
   if (!geogridType || geogridType === 'none') return 1.0;
   const pts = MIF_TABLE[geogridType];
   if (!pts) return 1.0;
   const mrs = Number(subgradeModulus) || 0;
   if (mrs <= pts[0][0]) return pts[0][1];
-  if (mrs >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
+  const last = pts[pts.length - 1];
+  if (mrs >= last[0]) {
+    if (pts.length < 2) return last[1];
+    const prev = pts[pts.length - 2];
+    const slope = (last[1] - prev[1]) / (last[0] - prev[0]);
+    return Math.max(1.0, last[1] + slope * (mrs - last[0]));
+  }
   for (let i = 0; i < pts.length - 1; i++) {
     const [m0, v0] = pts[i]; const [m1, v1] = pts[i + 1];
     if (m0 <= mrs && mrs <= m1) return v0 + ((mrs - m0) / (m1 - m0)) * (v1 - v0);
   }
-  return pts[pts.length - 1][1];
+  return last[1];
+}
+
+export function getMif(subgradeModulus, geogridType) {
+  return Math.min(SP59_GEOGRID_MIF_MAX, researchMif(subgradeModulus, geogridType));
+}
+
+// IRC:37-2018 Eq. 6.3 effective (equivalent half-space) modulus of a layered
+// foundation from its surface deflection under a 40 kN single wheel at
+// 0.56 MPa (a = 150.8 mm), mu = 0.35. `rows` = [{E, nu, h}, ..., subgrade].
+// `solve` is solver-client's solveAnalysis (same engine as the optimizer).
+const EFF_LOAD = 40000;
+const EFF_P = 0.56;
+const effCache = new Map();
+export async function effectiveModulus(rows, solve) {
+  if (rows.length === 1) return Number(rows[0].E);
+  const key = JSON.stringify(rows.map((r) => [Number(r.E), Number(r.nu), Number(r.h)]));
+  if (effCache.has(key)) return effCache.get(key);
+  const res = await solve({
+    layers: rows.map((r, i) => ({ E: Number(r.E), nu: Number(r.nu), h: i === rows.length - 1 ? 0 : Number(r.h) })),
+    wheel_load: EFF_LOAD,
+    tire_pressure: EFF_P,
+    wheel_type: 'Single',
+    wheel_spacing: 310,
+    points: [{ z: 0, r: 0 }],
+  });
+  const delta = Number(res?.results?.[0]?.disp_z);
+  if (!(delta > 0)) throw new Error('Effective-modulus solve returned no surface deflection');
+  const a = Math.sqrt(EFF_LOAD / (Math.PI * EFF_P));
+  const e = (2 * (1 - 0.35 ** 2) * EFF_P * a) / delta;
+  if (effCache.size > 500) effCache.clear();
+  effCache.set(key, e);
+  return e;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +147,13 @@ export function getMif(subgradeModulus, geogridType) {
 // ---------------------------------------------------------------------------
 const UNBOUND_GRANULAR = new Set(['WMM', 'WBM', 'GSB', 'CRL']);
 const CEMENT_TREATED = new Set(['CTB', 'CTSB']);
+const COLD_RECYCLED = new Set(['RAP']);
+const GEOGRID_ELIGIBLE = new Set(['WMM', 'WBM', 'GSB']);
+// IRC:37-2018 §8.1 / Table 11.1 — granular base on a CTSB: 350 MPa crushed
+// rock (WMM/WBM/CRL), 300 MPa natural gravel (GSB). Crack-relief interlayer
+// directly above a CTB: 450 MPa (§8.3).
+const GRANULAR_OVER_CTSB = { WMM: 350, WBM: 350, CRL: 350, GSB: 300 };
+const CRACK_RELIEF_E = 450;
 
 const typeOf = (l) => String(l?.type || l?.name || '').toUpperCase().trim();
 // Nominal thickness convention shared with doSingleRun / the advanced panels:
@@ -90,30 +163,43 @@ const nominalThickness = (l) => {
   return Number.isFinite(h) && h > 0 ? h : 0;
 };
 
+// Fixed IRC modulus an AUTO unbound layer takes from its lower neighbour
+// (CTB -> 450, CTSB -> 350/300), else null (Eq. 7.1 applies).
+function fixedModulusFromBelow(t, belowT) {
+  if (belowT === 'CTB') return CRACK_RELIEF_E;
+  if (belowT === 'CTSB') return GRANULAR_OVER_CTSB[t] ?? null;
+  return null;
+}
+
 // ---------------------------------------------------------------------------
-// IRC:37-2018 Eq. 7.1 auto-moduli for unbound granular layers.
-// Mirrors mep_opt/solver/irc37.py::build_layer_stack so the cockpit shows the
-// SAME granular moduli the engine derives when E is sent as null ("auto"):
+// Engine moduli of the non-bituminous layers. Mirrors
+// mep_opt/optimizer/smart_search.py::_build_solver_inputs + irc37.py::
+// build_layer_stack so the cockpit, Evaluate and the advanced panels use the
+// SAME moduli the optimizer analyses:
 //   - all-unbound + all-auto + no geogrid -> single composite layer of total
-//     thickness (§7.2.3): E = 0.2 * (Σh)^0.45 * MRS
-//   - otherwise -> bottom-up per-layer chain: E_i = 0.2 * h_i^0.45 * support
-//     (custom E pins the chain; cement-treated layers use their own E;
-//      an unbound layer directly above a cement-treated base gets the fixed
-//      450 MPa crack-relief modulus; geogrid multiplies by the MIF).
-// Returns [{ index, E }] for every auto-mode granular layer (index into the
-// full `layers` array), rounded to 2 dp. Layers with no usable thickness are
-// skipped so a half-typed row never zeroes the modulus.
+//     thickness (§7.2.3): E = 0.2 * (sum h)^0.45 * MRS
+//   - otherwise bottom-up per layer: cement-treated / RAP / pinned layers keep
+//     their E; an auto unbound layer above a CTB is 450 MPa, above a CTSB
+//     350/300 MPa; any other auto unbound layer uses Eq. 7.1 on the EFFECTIVE
+//     modulus of everything below it (Eq. 6.3 via `solve`; the subgrade
+//     modulus for the lowest layer); a geogrid multiplies by the capped MIF.
+// Returns [{ index, E, auto }] for every non-bituminous structural layer
+// (`auto` = the displayed E should follow this value). Layers with no usable
+// thickness are skipped so a half-typed row never zeroes the modulus.
+// Throws on IRC-invalid geogrid placement.
 // ---------------------------------------------------------------------------
-export function computeGranularAutoE(layers, numLayers, subgradeCbr) {
+export async function computeGranularAutoE(layers, numLayers, subgradeCbr, solve) {
   if (!Array.isArray(layers) || layers.length < 2) return [];
   const n = Math.min(numLayers ?? layers.length, layers.length);
   const structural = layers.slice(0, n - 1);
+  const subgrade = layers[n - 1] || {};
   const mrs = subgradeModulusFromCBR(subgradeCbr);
+  const subNu = Number.isFinite(Number(subgrade.nu)) ? Number(subgrade.nu) : 0.35;
 
   const granIdx = [];
   structural.forEach((l, i) => {
     const t = typeOf(l);
-    if (UNBOUND_GRANULAR.has(t) || CEMENT_TREATED.has(t)) granIdx.push(i);
+    if (UNBOUND_GRANULAR.has(t) || CEMENT_TREATED.has(t) || COLD_RECYCLED.has(t)) granIdx.push(i);
   });
   if (!granIdx.length) return [];
 
@@ -124,45 +210,45 @@ export function computeGranularAutoE(layers, numLayers, subgradeCbr) {
   const allAuto = granIdx.every((i) => isAuto(structural[i]));
   const anyGeogrid = granIdx.some((i) => hasGeogrid(structural[i]));
 
-  const out = [];
-
   if (allUnbound && allAuto && !anyGeogrid && granIdx.length > 1) {
-    // IRC §7.2.3 composite collapse — every collapsed layer reports the
-    // composite modulus (two stacked layers with the same E and ν are
-    // mechanically identical to one combined layer).
     const hTotal = granIdx.reduce((s, i) => s + nominalThickness(structural[i]), 0);
     if (hTotal <= 0) return [];
     const eComp = 0.2 * Math.pow(hTotal, 0.45) * mrs;
-    granIdx.forEach((i) => out.push({ index: i, E: Math.round(eComp * 100) / 100 }));
-    return out;
+    return granIdx.map((i) => ({ index: i, E: Math.round(eComp * 100) / 100, auto: true }));
   }
 
-  // Per-layer bottom-up chain (mirrors the mixed/treated branch).
-  let support = mrs;
+  const out = [];
+  const below = []; // rows beneath the current layer, top -> bottom
   for (let k = granIdx.length - 1; k >= 0; k--) {
     const i = granIdx[k];
     const l = structural[i];
     const t = typeOf(l);
-    let E;
-    if (CEMENT_TREATED.has(t)) {
-      E = Number(l.E) > 0 ? Number(l.E) : (t === 'CTB' ? 5000 : 600);
-    } else if (isAuto(l)) {
-      const belowT = i + 1 < structural.length ? typeOf(structural[i + 1]) : '';
-      if (CEMENT_TREATED.has(belowT)) {
-        // IRC:37-2018 §8.3 crack-relief interlayer above a cement-treated base
-        E = 450;
-      } else {
-        const h = nominalThickness(l);
-        if (h <= 0) continue; // half-typed row — leave E and the chain as-is
-        E = 0.2 * Math.pow(h, 0.45) * support;
-      }
-      if (hasGeogrid(l)) E *= getMif(mrs, l.geogrid);
-      out.push({ index: i, E: Math.round(E * 100) / 100 });
-    } else {
-      E = Number(l.E) > 0 ? Number(l.E) : support;
-      if (hasGeogrid(l)) E *= getMif(mrs, l.geogrid);
+    const h = nominalThickness(l);
+    const nu = Number.isFinite(Number(l.nu)) ? Number(l.nu) : 0.35;
+    const belowT = i + 1 < structural.length ? typeOf(structural[i + 1]) : '';
+    const fixedE = isAuto(l) ? fixedModulusFromBelow(t, belowT) : null;
+    if (hasGeogrid(l) && (!GEOGRID_ELIGIBLE.has(t) || fixedE != null)) {
+      throw new Error(
+        `Geogrid on ${t} is not supported: MIF applies to an Eq. 7.1 granular modulus ` +
+        `(not to cement-treated layers or to the fixed IRC moduli over CTB/CTSB).`
+      );
     }
-    support = E;
+    let E;
+    if (!isAuto(l)) {
+      E = Number(l.E) > 0 ? Number(l.E) : null;
+      if (E == null) continue;
+    } else if (fixedE != null) {
+      E = fixedE;
+    } else {
+      if (h <= 0) continue; // half-typed row — leave E and the chain as-is
+      const support = below.length
+        ? await effectiveModulus([...below, { E: mrs, nu: subNu, h: 0 }], solve)
+        : mrs;
+      E = 0.2 * Math.pow(h, 0.45) * support;
+    }
+    if (hasGeogrid(l)) E *= getMif(mrs, l.geogrid);
+    out.push({ index: i, E: Math.round(E * 100) / 100, auto: isAuto(l) });
+    below.unshift({ E, nu, h });
   }
   return out;
 }

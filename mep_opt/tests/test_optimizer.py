@@ -250,7 +250,10 @@ def test_ctb_spectrum_routes_through_check_ctb_adequacy():
             AxleLoadGroup("single", 20.0, 1000.0),
             AxleLoadGroup("tandem", 40.0, 500.0),
         ],
-        ctb_per_class_bridge_recompute=False,
+        # Force the spectrum check even though this fake design fails the
+        # other criteria (by default the exact spectrum solve is only run for
+        # designs that pass everything else).
+        ctb_per_class_bridge_recompute=True,
     )
 
     orig = ss.is_bridge_available
@@ -277,12 +280,26 @@ def test_ctb_spectrum_routes_through_check_ctb_adequacy():
         }
         return [dict(result, z=pt["z"], r=pt["r"]) for pt in eval_points]
 
-    opt._bridge_call = fake_bridge  # type: ignore[method-assign]
+    calls = []
+
+    def recording_bridge(stack, load_cfg, eval_points):
+        calls.append(dict(load_cfg))
+        return fake_bridge(stack, load_cfg, eval_points)
+
+    opt._bridge_call = recording_bridge  # type: ignore[method-assign]
     result = opt._evaluate([40.0, 60.0, 150.0, 150.0, 150.0])
 
     assert result["CDF_ctb"] is not None
-    assert result["ctb_details"]["details"][0]["load_kn"] == 20.0
-    assert result["ctb_details"]["details"][1]["load_kn"] == 40.0
+    d0, d1 = result["ctb_details"]["details"]
+    # IRC:37-2018 §3.6.3.2: a single axle loads one dual set with axle/4 per
+    # wheel; a tandem is two single axles at half the tandem load with twice
+    # the repetitions.
+    assert d0["group_load_kn"] == 20.0 and d0["single_axle_kn"] == 20.0
+    assert d0["wheel_load_n"] == 5000.0 and d0["n_applied"] == 1000.0
+    assert d1["group_load_kn"] == 40.0 and d1["single_axle_kn"] == 20.0
+    assert d1["wheel_load_n"] == 5000.0 and d1["n_applied"] == 1000.0
+    spectrum_calls = [c for c in calls if c["load"] == 5000.0]
+    assert spectrum_calls and all(c["pressure"] == 0.80 for c in spectrum_calls)
     assert result["ctb_adequate"] in (True, False)
 
 

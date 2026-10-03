@@ -24,6 +24,15 @@ behaviour applies everywhere the advanced modules read bridge output.
 from typing import Dict, List, Optional, Tuple
 
 
+# What the advanced modules (sensitivity, Monte Carlo, reserve) evaluate.
+# They work on a generic layer stack without layer types, so the CTB fatigue
+# criteria (IRC:37-2018 Eq. 3.5 / 3.6, which need the 0.80 MPa analysis and
+# the CTB depth) are not part of them; the optimizer runs those.
+ADVANCED_SCOPE_NOTE = (
+    "Bituminous fatigue (IRC:37-2018 Eq. 3.3/3.4) and subgrade rutting "
+    "(Eq. 3.1/3.2) only; CTB fatigue (Eq. 3.5/3.6) is checked by the optimizer."
+)
+
 # Eval points within this distance of a layer interface are treated as
 # interface probes (the ±0.1 mm convention) and re-anchored when the
 # geometry changes. Larger offsets are absolute-depth probes and stay put.
@@ -155,8 +164,10 @@ def extract_design_strains(
         )
 
     if bit_rows:
-        # Use max of tangential AND radial — see SmartPavementSearch._evaluate
-        # for the full rationale. eps_r can dominate at r=155 under dual tires.
+        # Largest |strain| of the tangential AND radial components (eps_r can
+        # dominate at r=155 under dual tires). IRC:37-2018 Table 3.1 note (a):
+        # only absolute values enter the performance equations; note (b): the
+        # strain under thin layers / strong bases may be compressive.
         eps_t = max(
             max(abs(r["eps_t"]), abs(r.get("eps_r", 0.0)))
             for r in bit_rows
