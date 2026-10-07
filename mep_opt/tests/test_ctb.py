@@ -137,6 +137,8 @@ def test_optimizer_ctb_with_spectrum_governs_on_worse_of_two_checks():
             AxleLoadGroup("single", 20.0, 1000.0),
             AxleLoadGroup("tandem", 40.0, 500.0),
         ],
+        # The fake design fails rutting; force the spectrum check anyway.
+        ctb_per_class_bridge_recompute=True,
     )
     opt = SmartPavementSearch(problem)
 

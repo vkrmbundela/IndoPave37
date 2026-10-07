@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Gauge, AlertCircle, ShieldCheck, TrendingUp } from 'lucide-react';
 import useAdvancedApi from '../../hooks/useAdvancedApi';
-import { bottomBituminousModulus, classifyPointRoles } from '../../../lib/irc';
+import { bottomBituminousModulus, classifyPointRoles, cumulativeMSA } from '../../../lib/irc';
 
 function GaugeBar({ label, value, max, color, unit = 'MSA' }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
@@ -88,13 +88,16 @@ export default function ReserveMeter({ sharedState }) {
     }
     setRolesOk(roles.ok);
 
-    const absT = (r) => Math.max(
-      Math.abs(r.eps_t || r.strain_t || 0),
-      Math.abs(r.eps_r || 0),
+    // IRC:37-2018 Annex III: the fatigue strain is the largest TENSILE
+    // horizontal strain (signed max of εt, εr); when every component is
+    // compressive "fatigue performance need not be checked" (sent as 0).
+    const tensT = (r) => Math.max(
+      Number(r.eps_t ?? r.strain_t ?? 0),
+      Number(r.eps_r ?? r.eps_t ?? r.strain_t ?? 0),
     );
     const absV = (r) => Math.abs(r.eps_z || r.strain_z || 0);
 
-    const maxEpsT = bitRows.length ? Math.max(...bitRows.map(absT)) : 0;
+    const maxEpsT = bitRows.length ? Math.max(0, ...bitRows.map(tensT)) : 0;
     const maxEpsV = subRows.length ? Math.max(...subRows.map(absV)) : 0;
 
     if (maxEpsV < 1e-15 && maxEpsT < 1e-15) return;
@@ -106,19 +109,16 @@ export default function ReserveMeter({ sharedState }) {
     // Compute design MSA from the SAME assumptions the optimizer used.
     // Pull every parameter from sharedState — never hardcode here, otherwise
     // the reserve gauge silently disagrees with the design it's meant to evaluate.
-    const cvpd = sharedState.cvpd || 800;
-    const growthRate = sharedState.growthRate ?? 0.05;
-    const designLife = sharedState.designLife ?? 20;
-    const ldf = sharedState.ldf ?? 0.75;
-    const vdf = sharedState.vdf ?? 2.5;
     const reliability = sharedState.reliabilityPercent ?? 80;
-
-    // Standard IRC 37 cumulative-MSA formula. Branch on near-zero growth rate
-    // to avoid the (1 - 1)/0 indeterminate that otherwise produces NaN.
-    const N = Math.abs(growthRate) < 1e-10
-      ? 365 * cvpd * ldf * vdf * designLife
-      : 365 * cvpd * ldf * vdf * (Math.pow(1 + growthRate, designLife) - 1) / growthRate;
-    const designMsa = N / 1e6;
+    // Same IRC:37-2018 Eq. 4.5/4.6 design traffic as the optimizer.
+    const designMsa = cumulativeMSA({
+      cvpd: sharedState.cvpd || 800,
+      growthRate: sharedState.growthRate ?? 0.05,
+      designLife: sharedState.designLife ?? 20,
+      ldf: sharedState.ldf ?? 0.75,
+      vdf: sharedState.vdf ?? 2.5,
+      constructionYears: sharedState.constructionYears ?? 0,
+    });
 
     post('/reserve', {
       eps_t: maxEpsT,
@@ -141,6 +141,7 @@ export default function ReserveMeter({ sharedState }) {
     sharedState.designLife,
     sharedState.ldf,
     sharedState.vdf,
+    sharedState.constructionYears,
     sharedState.reliabilityPercent,
     sharedState.airVoids,
     sharedState.bitumenVolume,

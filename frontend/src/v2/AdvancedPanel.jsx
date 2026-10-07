@@ -222,6 +222,15 @@ export default function AdvancedPanel({ sharedState, onClose, onUpdateLayer }) {
           })}
         </div>
 
+        {/* Scope note: these modules evaluate IRC fatigue + rutting only. */}
+        {(sharedState.layers || []).slice(0, Math.max(0, (sharedState.numLayers || 0) - 1))
+          .some(l => String(l?.type || l?.name || '').toUpperCase().trim() === 'CTB') && (
+          <div className="flex-none px-4 py-1 text-[10px] text-amber-800 bg-amber-50 border-b border-amber-100">
+            This stack has a CTB: the reserve, sensitivity and Monte Carlo modules evaluate bituminous
+            fatigue and subgrade rutting only — CTB fatigue (IRC:37-2018 Eq. 3.5 / 3.6) is checked by the optimizer.
+          </div>
+        )}
+
         {/* Content */}
         <AdvancedProvider>
           <div className="flex-1 overflow-y-auto min-h-0">
@@ -233,7 +242,7 @@ export default function AdvancedPanel({ sharedState, onClose, onUpdateLayer }) {
         <div className="flex-none flex items-center justify-between px-4 py-1.5 border-t border-gray-100 bg-gray-50 text-[10px] text-gray-400">
           <span>
             {sharedState.numLayers} layers | {sharedState.wheelType} {sharedState.load}N |
-            CBR {sharedState.subgradeCbr}% | {sharedState.cvpd} CVPD |
+            CBR {sharedState.subgradeCbr}% | {sharedState.cvpd} CVPD | R{sharedState.reliabilityPercent} |
             CTB {useCtbSpectrum ? 'spectrum on' : 'reference'}
           </span>
           <span>{sharedState.results?.length > 0 ? 'Results available' : 'No results — run Evaluate first'}</span>

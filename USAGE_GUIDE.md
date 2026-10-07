@@ -39,7 +39,7 @@ IndoPave-37 uses elastic layer theory to model multi-layered systems. The bottom
 
 ### Primary Design Failure Criteria (IRC:37-2019)
 The suite calculates and checks design safety against two critical failure modes:
-1. **Bituminous Fatigue Cracking**: Caused by horizontal tensile strain ($\varepsilon_t$) at the bottom of the lowest bituminous layer.
+1. **Bituminous Fatigue Cracking**: Caused by horizontal tensile strain ($\varepsilon_t$) at the bottom of the lowest bituminous layer. The engine takes the largest *tensile* value of the tangential and radial strains under the dual wheels; when they are all compressive (thin layers on strong bases), fatigue is not checked, as in IRC:37-2018 Annex III.
 2. **Subgrade Rutting**: Caused by vertical compressive strain ($\varepsilon_v$) at the top of the subgrade.
 
 ### Reference Validation
@@ -122,7 +122,7 @@ Switches the design engine to low-volume pavement rules.
 ### 🕸️ Geosynthetic Base Reinforcement (Geogrids)
 Integrate geogrid interlayers to reduce required base thickness.
 * Granular base/sub-base layers allow selection of biaxial or triaxial geogrids.
-* Applies a **Modulus Improvement Factor (MIF)** (e.g., $1.5\times$ or $2.0\times$ modulus multipliers) to simulate mechanical stabilization, enabling thinner aggregate bases while maintaining performance.
+* Applies a **Modulus Improvement Factor (MIF)** to the reinforced layer's Eq. 7.1 modulus (which rests on the effective modulus of the layers below, IRC:37-2018 §8.1), capped at **2.0** — the IRC:SP:59-2019 §3.1.3 design maximum for geogrids. SP:59 requires third-party-validated MIF for the actual product. A geogrid is accepted only on WMM/WBM/GSB, and not on an auto-modulus layer resting on a CTB/CTSB, whose modulus is a fixed IRC value. The optimizer also checks the conventional (unreinforced) section and keeps whichever is less critical, so a geogrid can never make a design thicker (SP:59 §3.1.3).
 
 ### 🚒 Cement Treated Base (CTB) Axle Spectrum
 When designing with a Cement Treated Base:

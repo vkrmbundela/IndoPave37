@@ -8,6 +8,7 @@ conflict with existing /api/solve, /api/optimize, /api/report/pdf.
 import asyncio
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field, field_validator, model_validator
+import math
 from typing import Dict, List, Optional
 
 from .reserve import compute_reserve
@@ -16,6 +17,7 @@ from .sensitivity import compute_sensitivity
 from .strain_field import compute_strain_field
 from .corridor import parse_corridor_csv, start_corridor_job, get_job_status
 from .montecarlo import run_monte_carlo
+from ._strain_utils import ADVANCED_SCOPE_NOTE
 
 
 advanced_router = APIRouter(prefix="/api/v2", tags=["advanced"])
@@ -71,13 +73,21 @@ class LayerData(BaseModel):
     def _thickness_non_negative(cls, v):
         if v < 0:
             raise ValueError("thickness must be non-negative")
+        if 0 < v < 1.0:
+            raise ValueError("layers thinner than 1 mm are not modelled; enter 0 to omit the layer")
         return v
 
     @field_validator("friction_factor")
     @classmethod
-    def _friction_factor_positive(cls, v):
-        if v <= 0:
-            raise ValueError("friction_factor must be positive")
+    def _friction_factor_binary(cls, v):
+        # The solver models fully bonded (1) or frictionless (0) interfaces;
+        # partial bond is not implemented, so other values are rejected
+        # (previously any value < 0.999 was silently treated as frictionless).
+        if v not in (0.0, 1.0):
+            raise ValueError(
+                "friction_factor must be 1 (fully bonded) or 0 (frictionless); "
+                "partial bond is not modelled"
+            )
         return v
 
 class LoadData(BaseModel):
@@ -120,15 +130,16 @@ class EvalPointData(BaseModel):
     @field_validator("z")
     @classmethod
     def _depth_non_negative(cls, v):
-        if v < 0:
-            raise ValueError("z must be non-negative")
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("z must be non-negative and finite")
         return v
 
     @field_validator("r")
     @classmethod
     def _radius_non_negative(cls, v):
-        if v < 0:
-            raise ValueError("r must be non-negative")
+        from mep_opt.solver.burmister import MAX_RADIAL_OFFSET
+        if not math.isfinite(v) or v < 0 or v > MAX_RADIAL_OFFSET:
+            raise ValueError(f"r must be non-negative, finite and <= {MAX_RADIAL_OFFSET:.0f} mm")
         return v
 
 class ReserveRequest(BaseModel):
@@ -359,7 +370,7 @@ async def sensitivity_heatmap(req: SensitivityRequest):
             req.air_voids,
             req.bitumen_volume,
         )
-        return {"status": "ok", "layers": result}
+        return {"status": "ok", "layers": result, "scope": ADVANCED_SCOPE_NOTE}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -390,9 +401,14 @@ async def strain_field(req: StrainFieldRequest):
 # ---------------------------------------------------------------------------
 
 @advanced_router.post("/corridor")
-async def corridor_upload(file: UploadFile = File(...)):
+async def corridor_upload(file: UploadFile = File(...), road_category: str = "other",
+                          reliability: int = DEFAULT_RELIABILITY):
     """Upload a CSV and start async corridor optimization."""
     try:
+        from mep_opt.solver.irc37 import normalize_road_category
+        road_category = normalize_road_category(road_category)
+        if reliability not in ALLOWED_RELIABILITY:
+            raise HTTPException(status_code=400, detail=f"reliability must be one of {ALLOWED_RELIABILITY}")
         content = (await file.read()).decode("utf-8")
         sections = parse_corridor_csv(content)
         if not sections:
@@ -413,7 +429,10 @@ async def corridor_upload(file: UploadFile = File(...)):
             {"layer_type": "GSB", "min_thickness": 150, "max_thickness": 300,
              "E": None, "nu": 0.35, "is_fixed": False},
         ]
-        job_id = await start_corridor_job(sections, default_constraints)
+        job_id = await start_corridor_job(
+            sections, default_constraints,
+            reliability=reliability, road_category=road_category,
+        )
         return {"status": "ok", "job_id": job_id, "total_sections": len(sections)}
     except HTTPException:
         raise

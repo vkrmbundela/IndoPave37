@@ -17,6 +17,7 @@ from mep_opt.advanced.sensitivity import compute_sensitivity
 from mep_opt.advanced.montecarlo import run_monte_carlo
 from mep_opt.advanced.reserve import compute_reserve
 from mep_opt.advanced.strain_field import compute_strain_field
+from mep_opt.advanced._strain_utils import ADVANCED_SCOPE_NOTE
 
 
 def _to_native(value):
@@ -52,7 +53,7 @@ def run_advanced(req_json):
                 r.get("point_roles"),  # None -> 4-point dashboard convention
                 float(r.get("air_voids", 3.0)), float(r.get("bitumen_volume", 11.5)),
             )
-            return json.dumps(_to_native({"status": "ok", "layers": res}))
+            return json.dumps(_to_native({"status": "ok", "layers": res, "scope": ADVANCED_SCOPE_NOTE}))
 
         if op == "montecarlo":
             res = run_monte_carlo(

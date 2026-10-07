@@ -79,6 +79,9 @@ def _cache_key(solver_stack, load_cfg, eval_points, timeout=None) -> Tuple:
             round(float(l.get("modulus", 0.0)), 4),
             round(float(l.get("poisson", 0.0)), 4),
             round(float(l.get("thickness", 0.0)), 4),
+            # The interface bond changes the response: it must be part of
+            # the key or a bonded and an unbonded stack would collide.
+            round(float(l.get("friction_factor", 1.0)), 4),
         )
         for l in solver_stack
     )

@@ -11,8 +11,12 @@ import math
 from typing import Any, Dict, List, Optional, Union
 import numpy as np
 
-from mep_opt.solver.irc37 import TrafficInput, SubgradeInput, ReliabilityLevel, AxleLoadGroup
-from mep_opt.optimizer.problem import OptimizationProblem
+from mep_opt.solver.irc37 import (
+    TrafficInput, SubgradeInput, ReliabilityLevel, AxleLoadGroup, normalize_road_category,
+    geogrid_placement_error,
+)
+from mep_opt.optimizer.problem import OptimizationProblem, KNOWN_LAYER_TYPES
+from mep_opt.solver.geosynthetic import MIF_TABLE
 from mep_opt.optimizer.smart_search import SmartPavementSearch
 from mep_opt.solver.geosynthetic import get_mif
 from mep_opt.solver import sp72 as _sp72
@@ -37,13 +41,127 @@ def _to_native(value: Any) -> Any:
     return value
 
 
+def _validate_request(data: dict) -> None:
+    """
+    Mirror of the FastAPI /api/optimize Pydantic validation (mep_opt.web.main)
+    for the in-browser path, which has no Pydantic. Raises ValueError with the
+    same messages so the deployed app rejects the same inputs as the backend.
+    """
+    def num(key, default=None):
+        v = data.get(key, default)
+        if v is None:
+            raise ValueError(f"{key} is required")
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be a number (got {data.get(key)!r})")
+        if not math.isfinite(v):
+            raise ValueError(f"{key} must be finite")
+        return v
+
+    if not num("cvpd") > 0:
+        raise ValueError("cvpd (commercial vehicles per day) must be positive")
+    if not (-0.05 <= num("growth_rate") <= 0.20):
+        raise ValueError("growth_rate must be between -0.05 and 0.20")
+    if not num("design_life") > 0:
+        raise ValueError("design_life must be positive")
+    if not float(data.get("design_life")).is_integer():
+        raise ValueError("design_life must be a whole number of years")
+    if not (0.0 <= num("construction_years", 0.0) <= 30.0):
+        raise ValueError("construction_years must be between 0 and 30")
+    if not (0.0 < num("lane_factor", 0.75) <= 1.0):
+        raise ValueError("lane_factor must be in (0, 1]")
+    if not num("vdf", 2.5) > 0:
+        raise ValueError("vdf must be positive")
+    if not num("subgrade_cbr") > 0:
+        raise ValueError("subgrade_cbr must be positive")
+    if not (1.0 <= num("air_voids", 3.0) <= 12.0):
+        raise ValueError("air_voids (Va, %) must be between 1 and 12")
+    if not (5.0 <= num("bitumen_volume", 11.5) <= 20.0):
+        raise ValueError("bitumen_volume (Vbe, %) must be between 5 and 20")
+    if data.get("reliability", "90%") not in ("80%", "90%"):
+        raise ValueError(
+            "reliability must be '80%' or '90%' — IRC:37-2018 defines "
+            "performance models for these two levels only."
+        )
+    if "road_category" in data and data["road_category"] is None:
+        raise ValueError("road_category must be a string")
+    normalize_road_category(data.get("road_category", "other"))
+    if not (1_000.0 <= num("wheel_load", 20000.0) <= 200_000.0):
+        raise ValueError("wheel_load (N per wheel) must be between 1,000 and 200,000")
+    if not (0.1 <= num("tire_pressure", 0.56) <= 2.0):
+        raise ValueError("tire_pressure (MPa) must be between 0.1 and 2.0")
+    if str(data.get("wheel_type", "Dual")).lower() not in ("single", "dual"):
+        raise ValueError("wheel_type must be 'Single' or 'Dual'")
+    if not (50.0 <= num("wheel_spacing", 310.0) <= 2_000.0):
+        raise ValueError("wheel_spacing (mm) must be between 50 and 2000")
+
+    layers = data.get("layers") or []
+    if not layers:
+        raise ValueError("At least one layer is required")
+    if len(layers) > 20:
+        raise ValueError("Maximum 20 layers supported (got %d)" % len(layers))
+    seen = set()
+    for l in layers:
+        t = str(l.get("layer_type") or "").strip()
+        if t.lower() != "subgrade" and t not in KNOWN_LAYER_TYPES:
+            raise ValueError(
+                f"Unknown layer_type {t!r}; supported: {sorted(KNOWN_LAYER_TYPES)} (plus 'Subgrade')"
+            )
+        if t.upper() in seen:
+            raise ValueError(f"Duplicate layer_type entries are not allowed: {t}")
+        seen.add(t.upper())
+        E = l.get("E")
+        if E is not None and not float(E) > 0:
+            raise ValueError("Elastic modulus E must be positive (or null for auto)")
+        nu = float(l.get("nu"))
+        if not (0.0 <= nu < 0.5):
+            raise ValueError("Poisson ratio nu must be in [0, 0.5)")
+        if l.get("min_thickness") is None or l.get("max_thickness") is None:
+            raise ValueError("min_thickness and max_thickness are required for every layer")
+        lo = float(l.get("min_thickness")); hi = float(l.get("max_thickness"))
+        fx = float(l.get("fixed_thickness", 0.0))
+        if lo < 0 or hi < 0 or fx < 0:
+            raise ValueError("Thickness must be non-negative (>= 0)")
+        if not l.get("is_fixed") and lo > hi:
+            raise ValueError(f"min_thickness ({lo}) cannot be greater than max_thickness ({hi})")
+        g = l.get("geogrid")
+        if g not in (None, "", "none") and g not in MIF_TABLE:
+            raise ValueError(f"geogrid must be one of {sorted(MIF_TABLE)} or null (got {g!r})")
+    placement = geogrid_placement_error([
+        (l.get("layer_type"), l.get("geogrid"), l.get("E")) for l in layers
+        if str(l.get("layer_type") or "").strip().lower() != "subgrade"
+    ])
+    if placement:
+        raise ValueError(placement)
+
+    for item in data.get("ctb_axle_spectrum") or []:
+        if str(item.get("axle_type", "")).strip().lower() not in ("single", "tandem", "tridem"):
+            raise ValueError("axle_type must be 'single', 'tandem' or 'tridem'")
+        if not float(item.get("load_kn", 0)) > 0:
+            raise ValueError("load_kn must be positive")
+        if not float(item.get("expected_repetitions", -1)) >= 0:
+            raise ValueError("expected_repetitions must be non-negative")
+
+    for code, val in (data.get("material_rates") or {}).items():
+        vals = val.values() if isinstance(val, dict) else [val]
+        for v in vals:
+            if v is not None and float(v) < 0:
+                raise ValueError(f"material_rates[{code}] values must be non-negative")
+        if isinstance(val, dict) and val.get("density") is not None and not float(val["density"]) > 0:
+            raise ValueError("density must be positive")
+
+
 def run_optimize(request_json_str: str) -> str:
     try:
         data = json.loads(request_json_str)
-        
+        _validate_request(data)
+
         cvpd = float(data.get("cvpd"))
         growth_rate = float(data.get("growth_rate"))
         design_life = int(data.get("design_life"))
+        construction_years = float(data.get("construction_years", 0.0))
+        road_category = normalize_road_category(data.get("road_category", "other"))
         vdf = float(data.get("vdf", 2.5))
         lane_factor = float(data.get("lane_factor", 0.75))
         subgrade_cbr = float(data.get("subgrade_cbr"))
@@ -68,7 +186,7 @@ def run_optimize(request_json_str: str) -> str:
         if raw_spectrum:
             ctb_axle_spectrum = [
                 AxleLoadGroup(
-                    axle_type=item.get("axle_type"),
+                    axle_type=str(item.get("axle_type")).strip().lower(),
                     load_kn=float(item.get("load_kn")),
                     expected_repetitions=float(item.get("expected_repetitions"))
                 ) for item in raw_spectrum
@@ -88,6 +206,8 @@ def run_optimize(request_json_str: str) -> str:
             E = float(raw_E) if raw_E is not None else None
             nu = float(l.get("nu"))
             geogrid = l.get("geogrid")
+            if geogrid in ("", "none"):
+                geogrid = None  # same normalisation as the API validator
             is_fixed = bool(l.get("is_fixed", False))
             fixed_thickness = float(l.get("fixed_thickness", 0.0))
             min_thickness = float(l.get("min_thickness", 0.0))
@@ -144,12 +264,13 @@ def run_optimize(request_json_str: str) -> str:
             design_life_years=design_life,
             lane_distribution_factor=lane_factor,
             vehicle_damage_factor=vdf,
+            years_to_completion=construction_years,
         )
 
         subgrade = SubgradeInput(cbr=subgrade_cbr)
 
-        # IRC:37-2018 §3.7 defines only R80 and R90; the optimizer
-        # auto-escalates R80->R90 for design traffic >= 20 msa.
+        # IRC:37-2018 §3.7 defines only R80 and R90; the optimizer escalates
+        # to R90 for Expressway/NH/SH/urban roads and for >= 20 msa.
         rel_map = {
             "80%": ReliabilityLevel.R80,
             "90%": ReliabilityLevel.R90,
@@ -161,6 +282,7 @@ def run_optimize(request_json_str: str) -> str:
             traffic=traffic,
             subgrade=subgrade,
             reliability=reliability,
+            road_category=road_category,
             temperature=temperature,
             air_voids=air_voids,
             bitumen_volume=bitumen_volume,
@@ -218,7 +340,7 @@ def run_optimize(request_json_str: str) -> str:
         reinforcement_out = []
         for l in raw_layers:
             g = l.get("geogrid")
-            if g:
+            if g not in (None, "", "none"):
                 reinforcement_out.append({
                     "layer": l.get("layer_type"),
                     "geogrid": g,
@@ -228,7 +350,7 @@ def run_optimize(request_json_str: str) -> str:
         sp72_cls = _sp72.classify(
             cvpd=cvpd, vdf=vdf, growth_rate=growth_rate,
             design_life_years=design_life, lane_factor=lane_factor,
-            cbr=subgrade_cbr,
+            cbr=subgrade_cbr, years_to_completion=construction_years,
         )
         sp72_out = {
             "is_low_volume": sp72_cls.is_low_volume,

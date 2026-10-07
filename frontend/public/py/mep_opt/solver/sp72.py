@@ -81,16 +81,18 @@ class SP72Classification:
 
 
 def compute_esal(cvpd: float, vdf: float, growth_rate: float,
-                 design_life_years: int, lane_factor: float) -> float:
+                 design_life_years: int, lane_factor: float,
+                 years_to_completion: float = 0.0) -> float:
     """
     Cumulative ESAL applications over the design life (IRC:SP:72 §3.4.4).
 
-        N = T0 × 365 × [((1+r)^n − 1) / r] × L,   T0 = CVPD × VDF
+        N = T0 × 365 × [((1+r)^n − 1) / r] × L,   T0 = CVPD × (1+r)^x × VDF
 
-    This is the same growth-series IRC:37 uses; SP:72 just reports it in
-    ESAL rather than MSA.
+    This is the same growth-series IRC:37 uses (with the IRC:37 Eq. 4.6
+    growth from the count year to the opening year); SP:72 just reports it
+    in ESAL rather than MSA.
     """
-    T0 = cvpd * vdf
+    T0 = cvpd * (1.0 + growth_rate) ** years_to_completion * vdf
     r = growth_rate
     n = design_life_years
     if abs(r) < 1e-10:
@@ -144,9 +146,10 @@ def is_low_volume(msa: float) -> bool:
 
 def classify(cvpd: float, vdf: float, growth_rate: float,
              design_life_years: int, lane_factor: float,
-             cbr: float) -> SP72Classification:
+             cbr: float, years_to_completion: float = 0.0) -> SP72Classification:
     """Full SP:72 classification + advisory for a candidate low-volume design."""
-    esal = compute_esal(cvpd, vdf, growth_rate, design_life_years, lane_factor)
+    esal = compute_esal(cvpd, vdf, growth_rate, design_life_years, lane_factor,
+                        years_to_completion)
     msa = esal / 1e6
     low = is_low_volume(msa)
     cat, hint = classify_traffic(esal)

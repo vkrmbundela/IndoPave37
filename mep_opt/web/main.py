@@ -135,12 +135,30 @@ class LayerInput(BaseModel):
     def h_non_negative(cls, v):
         if v < 0:
             raise ValueError("Layer thickness h must be >= 0")
+        if 0 < v < 1.0:
+            raise ValueError("Layers thinner than 1 mm are not modelled; use 0 for the half-space")
         return v
 
 
 class AnalysisPointInput(BaseModel):
     z: float
     r: float
+
+    @field_validator("z")
+    @classmethod
+    def z_valid(cls, v):
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("depth z must be finite and >= 0 mm")
+        return v
+
+    @field_validator("r")
+    @classmethod
+    def r_valid(cls, v):
+        from mep_opt.solver.burmister import MAX_RADIAL_OFFSET
+        if not math.isfinite(v) or abs(v) > MAX_RADIAL_OFFSET:
+            raise ValueError(
+                f"radial offset r must be finite and within {MAX_RADIAL_OFFSET:.0f} mm of the load")
+        return v
 
 
 class SolveRequest(BaseModel):
@@ -288,11 +306,25 @@ class MaterialRateOverride(BaseModel):
             raise ValueError("density must be positive")
         return v
 
+    @field_validator("transport_co2_factor")
+    @classmethod
+    def transport_non_negative(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("transport_co2_factor must be non-negative")
+        return v
+
 
 class AxleLoadGroupInput(BaseModel):
-    axle_type: str
-    load_kn: float
+    axle_type: str          # "single" | "tandem" | "tridem"
+    load_kn: float          # GROSS axle(-group) load, kN
     expected_repetitions: float
+
+    @field_validator("axle_type")
+    @classmethod
+    def axle_type_valid(cls, v):
+        if str(v).strip().lower() not in ("single", "tandem", "tridem"):
+            raise ValueError("axle_type must be 'single', 'tandem' or 'tridem'")
+        return str(v).strip().lower()
 
     @field_validator("load_kn")
     @classmethod
@@ -310,9 +342,15 @@ class AxleLoadGroupInput(BaseModel):
 
 
 class OptimizeRequest(BaseModel):
+    # Commercial vehicles/day as per the last count: directional volume for a
+    # divided carriageway, two-way volume otherwise (IRC:37-2018 §4.6.1).
     cvpd: float
     growth_rate: float
     design_life: int
+    # x in IRC Eq. 4.6: years from the count to completion of construction.
+    construction_years: float = 0.0
+    # IRC:37-2018 §3.7 / Eq. 3.5 road category: expressway | nh | sh | urban | other.
+    road_category: str = "other"
     vdf: float = 2.5
     lane_factor: float = 0.75
     ctb_axle_spectrum: Optional[List[AxleLoadGroupInput]] = None
@@ -360,6 +398,10 @@ class OptimizeRequest(BaseModel):
             if isinstance(val, MaterialRateOverride):
                 normalized[k] = val.model_dump(exclude_none=True)
             else:
+                # A bare number is the ₹/m³ rate; a negative rate would
+                # corrupt the Economy archetype.
+                if val < 0:
+                    raise ValueError(f"material_rates[{k}] must be non-negative")
                 normalized[k] = val
         return normalized
 
@@ -382,6 +424,33 @@ class OptimizeRequest(BaseModel):
     def design_life_positive(cls, v):
         if v <= 0:
             raise ValueError("design_life must be positive")
+        return v
+
+    @field_validator("construction_years")
+    @classmethod
+    def construction_years_range(cls, v):
+        if not (0.0 <= v <= 30.0):
+            raise ValueError("construction_years must be between 0 and 30")
+        return v
+
+    @field_validator("road_category")
+    @classmethod
+    def road_category_valid(cls, v):
+        from mep_opt.solver.irc37 import normalize_road_category
+        return normalize_road_category(v)
+
+    @field_validator("lane_factor")
+    @classmethod
+    def lane_factor_range(cls, v):
+        if not (0.0 < v <= 1.0):
+            raise ValueError("lane_factor must be in (0, 1]")
+        return v
+
+    @field_validator("vdf")
+    @classmethod
+    def vdf_positive(cls, v):
+        if not (v > 0):
+            raise ValueError("vdf must be positive")
         return v
 
     @field_validator("subgrade_cbr")
@@ -471,6 +540,13 @@ class OptimizeRequest(BaseModel):
         if len(v) > 20:
             raise ValueError("Maximum 20 layers supported (got %d)" % len(v))
         types = [str(l.layer_type).strip() for l in v]
+        from mep_opt.optimizer.problem import KNOWN_LAYER_TYPES
+        unknown = [t for t in types if t.lower() != "subgrade" and t not in KNOWN_LAYER_TYPES]
+        if unknown:
+            raise ValueError(
+                f"Unknown layer_type(s) {unknown}; supported: "
+                f"{sorted(KNOWN_LAYER_TYPES)} (plus 'Subgrade')"
+            )
         # Duplicates make layer_props / thickness_bounds dicts ambiguous.
         seen = set()
         dups = []
@@ -484,6 +560,13 @@ class OptimizeRequest(BaseModel):
             raise ValueError(
                 f"Duplicate layer_type entries are not allowed: {sorted(set(dups))}"
             )
+        from mep_opt.solver.irc37 import geogrid_placement_error
+        msg = geogrid_placement_error([
+            (l.layer_type, l.geogrid, l.E) for l in v
+            if str(l.layer_type).strip().lower() != "subgrade"
+        ])
+        if msg:
+            raise ValueError(msg)
         return v
 
 
@@ -617,13 +700,14 @@ async def run_optimization(data: OptimizeRequest):
             design_life_years=data.design_life,
             lane_distribution_factor=data.lane_factor,
             vehicle_damage_factor=data.vdf,
+            years_to_completion=data.construction_years,
         )
 
         subgrade = SubgradeInput(cbr=data.subgrade_cbr)
 
         # IRC:37-2018 §3.7 defines only R80 and R90 (the validator rejects
-        # anything else). The optimizer further auto-escalates R80->R90 for
-        # design traffic >= 20 msa.
+        # anything else). The optimizer escalates to R90 for Expressway / NH /
+        # SH / urban roads and for any road at >= 20 msa.
         rel_map = {
             "80%": ReliabilityLevel.R80,
             "90%": ReliabilityLevel.R90,
@@ -662,6 +746,7 @@ async def run_optimization(data: OptimizeRequest):
             traffic=traffic,
             subgrade=subgrade,
             reliability=reliability,
+            road_category=data.road_category,
             temperature=data.temperature,
             air_voids=data.air_voids,
             bitumen_volume=data.bitumen_volume,
@@ -767,7 +852,7 @@ async def run_optimization(data: OptimizeRequest):
         sp72_cls = _sp72.classify(
             cvpd=data.cvpd, vdf=data.vdf, growth_rate=data.growth_rate,
             design_life_years=data.design_life, lane_factor=data.lane_factor,
-            cbr=data.subgrade_cbr,
+            cbr=data.subgrade_cbr, years_to_completion=data.construction_years,
         )
         sp72_out = {
             "is_low_volume": sp72_cls.is_low_volume,

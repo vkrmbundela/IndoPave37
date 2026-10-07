@@ -73,26 +73,52 @@ MODIFIED_BITUMEN_GRADES = frozenset({BitumenGrade.CRMB, BitumenGrade.PMB, Bitume
 class TrafficInput:
     """Traffic characterization input."""
     initial_aadt: float        # Initial AADT
-    commercial_vehicles_per_day: float  # CVpd in one direction
+    # Commercial vehicles per day as per the last count (P in IRC Eq. 4.6).
+    # Directional volume for divided carriageways, two-way volume otherwise
+    # (IRC:37-2018 §4.6.1) — the lane distribution factor is applied to it.
+    commercial_vehicles_per_day: float
     traffic_growth_rate: float  # Annual growth rate (fraction, e.g., 0.05)
     design_life_years: int = 20
     lane_distribution_factor: float = 0.75  # fraction of traffic in design lane
     vehicle_damage_factor: float = 2.5      # VDF (standard axle load factor)
+    # x in IRC Eq. 4.6: years between the last count and the completion of
+    # construction. A = P (1 + r)^x. 0 means the count is already the
+    # opening-year traffic.
+    years_to_completion: float = 0.0
+
+    def __post_init__(self):
+        if not (self.commercial_vehicles_per_day >= 0):
+            raise ValueError("commercial_vehicles_per_day must be >= 0")
+        if not (self.traffic_growth_rate > -1.0):
+            raise ValueError("traffic_growth_rate must be > -100%")
+        if not (self.design_life_years > 0):
+            raise ValueError("design_life_years must be > 0")
+        if not (0.0 < self.lane_distribution_factor <= 1.0):
+            raise ValueError("lane_distribution_factor must be in (0, 1]")
+        if not (self.vehicle_damage_factor > 0):
+            raise ValueError("vehicle_damage_factor must be > 0")
+        if not (self.years_to_completion >= 0):
+            raise ValueError("years_to_completion must be >= 0")
+
+    def initial_traffic(self) -> float:
+        """A = P (1 + r)^x — CVPD in the year of completion (IRC Eq. 4.6)."""
+        return self.commercial_vehicles_per_day * (1.0 + self.traffic_growth_rate) ** self.years_to_completion
 
     def cumulative_msa(self) -> float:
         """
-        Calculate cumulative traffic in million standard axles (MSA).
+        Calculate cumulative traffic in million standard axles (MSA),
+        IRC:37-2018 Eq. 4.5:
 
-        N = 365 × A × D × F × [(1+r)^n - 1] / r
+        N = 365 × A × D × F × [(1+r)^n - 1] / r,   A = P (1 + r)^x
 
         Where:
-        - A = CVpd (commercial vehicles per day)
+        - A = CVPD in the year of completion of construction
         - D = lane distribution factor
         - F = vehicle damage factor
         - r = growth rate
         - n = design life
         """
-        A = self.commercial_vehicles_per_day
+        A = self.initial_traffic()
         D = self.lane_distribution_factor
         F = self.vehicle_damage_factor
         r = self.traffic_growth_rate
@@ -106,13 +132,111 @@ class TrafficInput:
         return N / 1e6  # Convert to MSA
 
 
+# ---------------------------------------------------------------------------
+# Road category — drives reliability (§3.7) and the CTB RF factor (Eq. 3.5)
+# ---------------------------------------------------------------------------
+ROAD_CATEGORIES = ("expressway", "nh", "sh", "urban", "other")
+# IRC:37-2018 §3.7: 90 % reliability for Expressways, National Highways,
+# State Highways and Urban Roads irrespective of traffic; for other roads
+# 90 % at >= 20 msa and 80 % below.
+IMPORTANT_ROAD_CATEGORIES = frozenset({"expressway", "nh", "sh", "urban"})
+
+
+def normalize_road_category(road_category: Optional[str]) -> str:
+    """Map user spellings onto ROAD_CATEGORIES (raises on unknown values)."""
+    if road_category is None:
+        return "other"
+    key = str(road_category).strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+    aliases = {
+        "expressway": "expressway", "ew": "expressway",
+        "nh": "nh", "nationalhighway": "nh",
+        "sh": "sh", "statehighway": "sh",
+        "urban": "urban", "urbanroad": "urban", "urbanroads": "urban",
+        "other": "other", "mdr": "other", "odr": "other", "vr": "other",
+        "majordistrictroad": "other", "otherdistrictroad": "other", "villageroad": "other",
+    }
+    if key not in aliases:
+        raise ValueError(
+            f"road_category must be one of {list(ROAD_CATEGORIES)} (got {road_category!r})"
+        )
+    return aliases[key]
+
+
+def required_reliability(cumulative_msa: float,
+                         road_category: Optional[str] = "other",
+                         requested: Optional["ReliabilityLevel"] = None) -> "ReliabilityLevel":
+    """
+    Reliability level to use per IRC:37-2018 §3.7. The requested level is
+    honoured unless IRC requires the higher one (never de-escalated).
+    """
+    cat = normalize_road_category(road_category)
+    needs_r90 = cat in IMPORTANT_ROAD_CATEGORIES or cumulative_msa >= 20.0
+    if needs_r90:
+        return ReliabilityLevel.R90
+    if requested is None:
+        return ReliabilityLevel.R80
+    return _resolve_irc_reliability(requested)
+
+
+def ctb_reliability_factor(cumulative_msa: float, road_category: Optional[str] = "other") -> float:
+    """
+    RF of IRC:37-2018 Eq. 3.5 (§3.6.3.1): 1 for Expressways, National
+    Highways, State Highways and Urban Roads, and for other roads when the
+    design traffic exceeds 10 msa; 2 for all other cases. The design
+    catalogues (§12.3) apply RF = 1 from 10 msa inclusive, which is used here
+    (the conservative reading of the boundary).
+    """
+    cat = normalize_road_category(road_category)
+    if cat in IMPORTANT_ROAD_CATEGORIES or cumulative_msa >= 10.0:
+        return 1.0
+    return 2.0
+
+
 @dataclass
 class AxleLoadGroup:
     """Axle load category for load spectrum analysis (e.g. for CTB)."""
     axle_type: str              # "single", "tandem", "tridem"
-    load_kn: float              # Axle load in kN
+    load_kn: float              # GROSS axle(-group) load in kN
     expected_repetitions: float # n_i: Number of expected repetitions over design life
 
+
+# Number of single axles an axle group is resolved into (IRC:37-2018 §3.6.3.2):
+# a tandem = two single axles at 50 % of the tandem load, a tridem = three
+# single axles at one third of the tridem load.
+_AXLES_PER_GROUP = {"single": 1, "tandem": 2, "tridem": 3}
+# Each equivalent single axle carries two dual-wheel sets (four wheels); the
+# analysis applies one dual set, so wheel load = single-axle load / 4
+# (IRC Annex-II II.4: "wheel load = 190000/4").
+WHEELS_PER_SINGLE_AXLE = 4
+
+
+def expand_axle_spectrum(groups: List["AxleLoadGroup"]) -> List[dict]:
+    """
+    Resolve an axle-load spectrum into equivalent single-axle classes per
+    IRC:37-2018 §3.6.3.2. Returns one dict per input group with
+    single_axle_kn, wheel_load_n and the single-axle repetitions.
+    """
+    out = []
+    for g in groups:
+        kind = str(g.axle_type).strip().lower()
+        if kind not in _AXLES_PER_GROUP:
+            raise ValueError(
+                f"axle_type must be one of {sorted(_AXLES_PER_GROUP)} (got {g.axle_type!r})"
+            )
+        if not (g.load_kn > 0):
+            raise ValueError(f"load_kn must be > 0 (got {g.load_kn!r})")
+        if not (g.expected_repetitions >= 0):
+            raise ValueError(f"expected_repetitions must be >= 0 (got {g.expected_repetitions!r})")
+        k = _AXLES_PER_GROUP[kind]
+        single_kn = float(g.load_kn) / k
+        out.append({
+            "axle_type": kind,
+            "group_load_kn": float(g.load_kn),
+            "single_axle_kn": single_kn,
+            "wheel_load_n": single_kn * 1000.0 / WHEELS_PER_SINGLE_AXLE,
+            "single_axle_repetitions": float(g.expected_repetitions) * k,
+        })
+    return out
 
 
 @dataclass
@@ -131,7 +255,7 @@ class SubgradeInput:
 
         Per IRC 37:2018 Annex-II worked example (page 78):
         "the effective modulus value will be limited to 100 MPa for design
-        purpose." The cap corresponds to a design CBR of about 15.8%.
+        purpose." The cap corresponds to a design CBR of 15.1% (Annex-II II.1).
         """
         if self.cbr <= 5.0:
             mr = 10.0 * self.cbr
@@ -348,7 +472,8 @@ def rutting_life(eps_v: float,
 
 
 def ctb_fatigue_life_strain(eps_t: float, ctb_modulus: float,
-                            reliability: ReliabilityLevel = ReliabilityLevel.R90) -> float:
+                            reliability: ReliabilityLevel = ReliabilityLevel.R90,
+                            rf: Optional[float] = None) -> float:
     """
     Allowable fatigue repetitions for a Cement Treated Base per the
     strain-based criterion of IRC:37-2018 Eq. 3.5:
@@ -372,13 +497,19 @@ def ctb_fatigue_life_strain(eps_t: float, ctb_modulus: float,
     Args:
         eps_t: Tensile strain at bottom of CTB (absolute value, not microstrain)
         ctb_modulus: CTB elastic modulus (MPa)
-        reliability: ReliabilityLevel (only R80/R90 are IRC-defined)
+        reliability: ReliabilityLevel (only R80/R90 are IRC-defined). Used to
+            pick RF only when ``rf`` is not given (legacy behaviour).
+        rf: reliability factor of Eq. 3.5. IRC defines it by road category
+            and traffic, NOT by reliability level — callers should pass
+            ctb_reliability_factor(msa, road_category).
 
     Returns:
         Allowable repetitions N
     """
     if abs(eps_t) < 1e-15:
         return float('inf')
+    if rf is not None and rf not in (1.0, 2.0):
+        raise ValueError(f"rf must be 1 or 2 per IRC:37-2018 Eq. 3.5 (got {rf!r})")
     if ctb_modulus is None or ctb_modulus <= 0:
         raise ValueError(
             f"ctb_modulus must be > 0 MPa (got {ctb_modulus!r})"
@@ -388,7 +519,8 @@ def ctb_fatigue_life_strain(eps_t: float, ctb_modulus: float,
         ReliabilityLevel.R80: 2.0,
         ReliabilityLevel.R90: 1.0,
     }
-    rf = CTB_RELIABILITY_FACTOR[_resolve_irc_reliability(reliability)]
+    if rf is None:
+        rf = CTB_RELIABILITY_FACTOR[_resolve_irc_reliability(reliability)]
 
     eps_micro = abs(eps_t) * 1e6
     numerator = 113000.0 / (ctb_modulus ** 0.804) + 191.0
@@ -472,6 +604,39 @@ def check_ctb_adequacy(expected_spectrum: List[AxleLoadGroup],
     }
 
 
+def bituminous_fatigue_strain(rows) -> Tuple[float, float, bool]:
+    """
+    Critical fatigue strain from the solver rows at the bottom of the bottom
+    bituminous layer (r = 0 and 155 mm under the dual set).
+
+    IRC:37-2018 Annex II: εt is the largest of the tangential and radial
+    strains at the two radial distances. Annex III shows which sign: the
+    catalogue tabulates the largest TENSILE value (e.g. Table III.2, 5 msa:
+    1.18E-04 with fatigue life 1096 msa, although the radial strain between
+    the duals is about -297 µε), and "the computed horizontal strain at the
+    bottom of the bituminous layer is 'compressive' and thus fatigue
+    performance need not be checked" when no component is tensile.
+
+    Returns (eps_for_equation, eps_reported, compressive):
+      eps_for_equation  largest tensile strain, or 0.0 when every component is
+                        compressive (Eq. 3.3/3.4 then gives no fatigue damage);
+      eps_reported      the same tensile value, or the largest compressive
+                        magnitude as a negative number;
+      compressive       True when no component is tensile.
+    """
+    comps: List[float] = []
+    for r in rows:
+        comps.append(float(r["eps_t"]))
+        if r.get("eps_r") is not None:
+            comps.append(float(r["eps_r"]))
+    if not comps:
+        return 0.0, 0.0, False
+    tensile = max(comps)
+    if tensile > 0.0:
+        return tensile, tensile, False
+    return 0.0, min(comps), True
+
+
 def check_design_adequacy(eps_t: float, eps_v: float,
                           cumulative_msa: float,
                           mix_modulus: float,
@@ -518,6 +683,72 @@ def check_design_adequacy(eps_t: float, eps_v: float,
     }
 
 
+# IRC:37-2018 §6.4.1 / Eq. 6.3 — effective (equivalent half-space) modulus of a
+# layered foundation from its maximum surface deflection under a single wheel
+# load of 40,000 N at 0.56 MPa (contact radius 150.8 mm), Poisson's ratio 0.35:
+#     M_RS = 2 (1 - mu^2) p a / delta
+EFFECTIVE_MODULUS_LOAD_N = 40000.0
+EFFECTIVE_MODULUS_PRESSURE_MPA = 0.56
+EFFECTIVE_MODULUS_POISSON = 0.35
+
+# Granular base resting directly on a cement-treated sub-base takes a fixed
+# modulus (IRC:37-2018 §8.1 and Table 11.1): 300 MPa for natural gravel,
+# 350 MPa for crushed rock. WMM/WBM/CRL are crushed-rock bases; GSB is graded
+# natural gravel (the conservative 300 MPa).
+GRANULAR_OVER_CTSB_MODULUS = {"WMM": 350.0, "WBM": 350.0, "CRL": 350.0, "GSB": 300.0}
+# Geosynthetic reinforcement is defined for unbound granular layers only.
+GEOGRID_ELIGIBLE_TYPES = frozenset({"WMM", "WBM", "GSB"})
+_FIXED_MODULUS_SUPPORT_TYPES = frozenset({"CTB", "CTSB"})
+
+
+def geogrid_placement_error(layers) -> Optional[str]:
+    """
+    Check where geogrids sit, before any analysis. `layers` is the pavement
+    top to bottom (subgrade excluded) as (layer_type, geogrid, pinned_E)
+    tuples. The SP:59 MIF scales an Eq. 7.1 granular modulus, so a geogrid is
+    accepted only on an unbound granular layer (WMM/WBM/GSB), and not on an
+    auto-modulus layer resting on a CTB/CTSB, whose modulus is a fixed IRC
+    value (450 MPa crack-relief layer, 350/300 MPa base over CTSB).
+    Returns the message for the first invalid placement, or None.
+    """
+    rows = [(str(t).upper().strip(), g, e) for t, g, e in layers]
+    for i, (lt, g, e) in enumerate(rows):
+        if g in (None, "", "none"):
+            continue
+        if lt not in GEOGRID_ELIGIBLE_TYPES:
+            return (f"Geogrid reinforcement is only defined for unbound granular "
+                    f"layers {sorted(GEOGRID_ELIGIBLE_TYPES)} (got {lt})")
+        below = rows[i + 1][0] if i + 1 < len(rows) else None
+        if e is None and below in _FIXED_MODULUS_SUPPORT_TYPES:
+            return (f"Geogrid on {lt} directly above {below} is not supported: its "
+                    f"modulus is a fixed IRC value, not an Eq. 7.1 modulus the MIF scales.")
+    return None
+
+
+def effective_modulus(rows: List[dict]) -> float:
+    """
+    Effective modulus (MPa) of a layered foundation per IRC:37-2018 Eq. 6.3.
+
+    rows: [{modulus, poisson, thickness}, ..., half-space] top to bottom.
+    A single half-space row returns its own modulus.
+    """
+    if len(rows) == 1:
+        return float(rows[0]["modulus"])
+    from mep_opt.solver.burmister import analyze_pavement
+    load = {
+        "load": EFFECTIVE_MODULUS_LOAD_N,
+        "pressure": EFFECTIVE_MODULUS_PRESSURE_MPA,
+        "is_dual": False,
+        "spacing": 0.0,
+    }
+    delta = analyze_pavement(rows, load, [{"z": 0.0, "r": 0.0}])[0]["disp_z"]
+    if not (delta > 0):
+        raise ValueError(f"Non-positive surface deflection {delta!r} in effective-modulus calculation")
+    a = math.sqrt(EFFECTIVE_MODULUS_LOAD_N / (math.pi * EFFECTIVE_MODULUS_PRESSURE_MPA))
+    mu = EFFECTIVE_MODULUS_POISSON
+    return 2.0 * (1.0 - mu ** 2) * EFFECTIVE_MODULUS_PRESSURE_MPA * a / delta
+
+
 def build_layer_stack(subgrade: SubgradeInput,
                       granular_layers: List[Union[dict, GranularLayerInput]],
                       bituminous_layers: List[BituminousLayerInput],
@@ -562,7 +793,7 @@ def build_layer_stack(subgrade: SubgradeInput,
     # collapse rule only applies when *every* granular entry is an unbound
     # type (WMM/WBM/GSB). CTB/CTSB or any other bound material breaks the
     # collapse and forces per-layer analysis.
-    UNBOUND_GRANULAR = {"WMM", "WBM", "GSB"}
+    UNBOUND_GRANULAR = {"WMM", "WBM", "GSB", "CRL"}
 
     def _is_unbound(gran) -> bool:
         l_type = _gran_get(gran, 'layer_type') or _gran_get(gran, 'material_type') or ''
@@ -607,12 +838,32 @@ def build_layer_stack(subgrade: SubgradeInput,
         # II.3: 0.2*480^0.45*62 = 200 MPa). No modular-ratio cap is specified
         # in IRC:37-2018; the previous min(., 3.0*support) clip is removed.
         composite_mod = 0.2 * (h_total ** 0.45) * support_modulus
+        # Poisson's ratio of the combined layer: IRC §7.2.3 / §8.1 give 0.35
+        # for granular base and sub-base (the default of every entry); a
+        # user-entered value is honoured as the thickness-weighted mean.
+        def _nu_of(g):
+            n_ = _gran_get(g, 'nu')
+            if n_ is None:
+                l_type = _gran_get(g, 'layer_type') or _gran_get(g, 'material_type') or ''
+                n_ = (layer_props.get(l_type, {}) or {}).get('nu')
+            return 0.35 if n_ is None else float(n_)
+        composite_nu = sum(
+            _nu_of(g) * float(_gran_get(g, 'thickness') or 0.0) for g in granular_layers
+        ) / h_total
         gran_moduli.append(composite_mod)
-        gran_nu_values.append(0.35)
+        gran_nu_values.append(composite_nu)
         gran_thicknesses.append(h_total)
     else:
-        # Treated/mixed stack-ups: per-layer bottom-up analysis (unchanged)
-        current_support = support_modulus
+        # Per-layer bottom-up analysis (treated/mixed stacks, pinned moduli or
+        # geosynthetic reinforcement). IRC:37-2018 Eq. 7.1 takes the
+        # EFFECTIVE modulus of the supporting system: for the lowest granular
+        # layer that is the subgrade; for a layer resting on other layers it
+        # is the equivalent half-space modulus (Eq. 6.3) of everything below
+        # (§7.2.3, and explicitly for reinforced bases in §8.1 / IRC:SP:59).
+        # Using the immediate layer's own modulus instead over-stiffens the
+        # upper layer (and made a zero-benefit geogrid look like a 24% cut in
+        # fatigue strain).
+        sub_row = {"modulus": support_modulus, "poisson": sub_nu, "thickness": 0}
         for gran in reversed(granular_layers):
             l_type = _gran_get(gran, 'layer_type') or _gran_get(gran, 'material_type') or 'Granular'
             h = _gran_get(gran, 'thickness')
@@ -629,27 +880,38 @@ def build_layer_stack(subgrade: SubgradeInput,
                 custom_E = layer_custom.get('E')
             if custom_nu is None:
                 custom_nu = layer_custom.get('nu')
+            nu_i = custom_nu if custom_nu is not None else 0.35
 
             if custom_E is not None:
                 mod = custom_E
             else:
-                # IRC:37-2018 Eq. 7.1 (per-layer). No modular-ratio cap is
-                # specified in IRC:37-2018 (see Annex-II II.3), so the prior
-                # min(., 3.0*support) clip is removed.
-                mod = 0.2 * (h ** 0.45) * current_support
+                if gran_moduli:
+                    below = [
+                        {"modulus": m_, "poisson": n_, "thickness": t_}
+                        for m_, n_, t_ in zip(gran_moduli, gran_nu_values, gran_thicknesses)
+                    ] + [sub_row]
+                    support = effective_modulus(below)
+                else:
+                    support = support_modulus
+                # IRC:37-2018 Eq. 7.1 (no modular-ratio cap, see Annex-II II.3)
+                mod = 0.2 * (h ** 0.45) * support
 
-            # Geosynthetic reinforcement: uplift the (unreinforced) modulus by
-            # the MIF, keyed on the SUBGRADE modulus Mrs — not the immediate
-            # support. Mr_reinforced = MIF × Mr_unreinforced (Saride 2021).
+            # Geosynthetic reinforcement: Mr_reinforced = MIF x Mr_unreinforced,
+            # MIF keyed on the SUBGRADE modulus and capped at the IRC:SP:59
+            # design maximum of 2.0 (see geosynthetic.get_mif).
             geogrid = _geogrid_of(gran)
             if geogrid is not None:
+                if str(l_type).upper() not in GEOGRID_ELIGIBLE_TYPES:
+                    raise ValueError(
+                        f"Geogrid reinforcement is only defined for unbound granular "
+                        f"layers {sorted(GEOGRID_ELIGIBLE_TYPES)} (got {l_type})"
+                    )
                 from mep_opt.solver.geosynthetic import get_mif
                 mod = mod * get_mif(support_modulus, geogrid)
 
             gran_moduli.insert(0, mod)
-            gran_nu_values.insert(0, custom_nu if custom_nu is not None else 0.35)
+            gran_nu_values.insert(0, nu_i)
             gran_thicknesses.insert(0, h)
-            current_support = mod
 
     # Build stack: bituminous (top) → granular → subgrade (bottom).
     # Note: gran_* lists have one entry per row that should appear in the
