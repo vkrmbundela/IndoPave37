@@ -411,7 +411,17 @@ def _design_basis(styles, traffic_params, subgrade_cbr, sol):
     ], colWidths=[70 * mm, 50 * mm, 50 * mm], style=_kv_style()))
     story.append(Spacer(1, 4 * mm))
 
-    rel = "90% (mandatory ≥ 20 MSA)" if msa >= 20 else "80% (low-volume, < 20 MSA)"
+    # The level the engine actually used (IRC §3.7 by road category and
+    # traffic); the MSA rule is only a fallback for results without it.
+    ru = str(details.get('reliability') or ('R90' if msa >= 20 else 'R80')).upper()
+    cat = str(details.get('road_category') or '').lower()
+    if ru == 'R90':
+        if cat in ('expressway', 'nh', 'sh', 'urban'):
+            rel = f"90% ({cat.upper() if cat in ('nh', 'sh') else cat.title()}: any traffic)"
+        else:
+            rel = "90% (≥ 20 MSA)"
+    else:
+        rel = "80% (other roads, < 20 MSA)"
     story.append(_section(styles, "Reliability &amp; Mix", "IRC:37-2018 §3.7, §3.6.2"))
     av = _f(details.get('air_voids', 3.0)) or 3.0
     vbe = _f(details.get('bitumen_volume', 11.5)) or 11.5
@@ -612,7 +622,13 @@ def _compliance(styles, sol):
     # --- Fatigue (bituminous) ---
     et = details.get('eps_t'); cdf_f = _f(details.get('CDF_fatigue'))
     nf = _f(details.get('Nf')); et_allow = _allowable_strain(et, cdf_f, _FATIGUE_EXP)
-    fatigue_applicable = abs(_f(et)) > 1e-12
+    fatigue_applicable = abs(_f(et)) > 1e-12 and not details.get('fatigue_compressive')
+    if details.get('fatigue_compressive'):
+        story.append(Paragraph(
+            "<b>Bituminous Fatigue Cracking</b> (IRC:37-2018 §3.6.2): not checked — the "
+            f"horizontal strain at the bottom of the bituminous layer is compressive "
+            f"({fmt_strain(et)}); per Annex III fatigue performance need not be checked.",
+            styles['cell']))
     if fatigue_applicable:
         story.append(_criterion_block(
             styles, "Bituminous Fatigue Cracking", "IRC:37-2018 §3.6.2 · Eq. 3.3/3.4",
@@ -684,10 +700,12 @@ def _clause_checklist(styles, sol):
     items = [
         ("Standard axle: dual wheels, 2 × 20 kN at 0.56 MPa, 310 mm c/c", "§3.6.1"),
         ("εᵥ evaluated at the top of the subgrade (rutting)", "§3.6.1"),
-        ("εₜ evaluated at the bottom of the bottom bituminous layer (fatigue)", "§3.6.2"),
+        ("εₜ = largest tensile horizontal strain at the bottom of the bottom bituminous "
+         "layer; not checked when compressive (Annex III)", "§3.6.2"),
         ("Subgrade Mᵣₛ from Eq. 6.1/6.2, capped at 100 MPa", "§6.3 / Cl. 6.4.2"),
         ("Granular modulus from Eq. 7.1; unbound base+sub-base combined", "§7.2.3"),
-        ("Reliability auto-set: 90% for ≥ 20 MSA, else 80%", "§3.7"),
+        ("Reliability: 90% for Expressways, NH, SH and urban roads at any traffic; "
+         "other roads 90% at ≥ 20 MSA, else 80%", "§3.7"),
         ("All cumulative damage factors checked against the 1.0 limit", "§3.6"),
     ]
     if has_ctb:

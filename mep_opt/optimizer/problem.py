@@ -254,6 +254,16 @@ class OptimizationProblem:
                 )
             if lt in BASE_SUBBASE_LAYER_TYPES:
                 seen_base = True
+        # Geogrid placement is a property of the stack, not of one thickness
+        # combination: reject it here instead of failing every evaluation.
+        from mep_opt.solver.irc37 import geogrid_placement_error
+        props = self.layer_props or {}
+        msg = geogrid_placement_error([
+            (lt, (props.get(lt) or {}).get("geogrid"), (props.get(lt) or {}).get("E"))
+            for lt in self.layer_types
+        ])
+        if msg:
+            raise ValueError(msg)
 
     def _validate_inputs(self) -> None:
         if not (1.0 <= float(self.air_voids) <= 12.0):

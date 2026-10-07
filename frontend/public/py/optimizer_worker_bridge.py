@@ -13,6 +13,7 @@ import numpy as np
 
 from mep_opt.solver.irc37 import (
     TrafficInput, SubgradeInput, ReliabilityLevel, AxleLoadGroup, normalize_road_category,
+    geogrid_placement_error,
 )
 from mep_opt.optimizer.problem import OptimizationProblem, KNOWN_LAYER_TYPES
 from mep_opt.solver.geosynthetic import MIF_TABLE
@@ -64,6 +65,8 @@ def _validate_request(data: dict) -> None:
         raise ValueError("growth_rate must be between -0.05 and 0.20")
     if not num("design_life") > 0:
         raise ValueError("design_life must be positive")
+    if not float(data.get("design_life")).is_integer():
+        raise ValueError("design_life must be a whole number of years")
     if not (0.0 <= num("construction_years", 0.0) <= 30.0):
         raise ValueError("construction_years must be between 0 and 30")
     if not (0.0 < num("lane_factor", 0.75) <= 1.0):
@@ -81,6 +84,8 @@ def _validate_request(data: dict) -> None:
             "reliability must be '80%' or '90%' — IRC:37-2018 defines "
             "performance models for these two levels only."
         )
+    if "road_category" in data and data["road_category"] is None:
+        raise ValueError("road_category must be a string")
     normalize_road_category(data.get("road_category", "other"))
     if not (1_000.0 <= num("wheel_load", 20000.0) <= 200_000.0):
         raise ValueError("wheel_load (N per wheel) must be between 1,000 and 200,000")
@@ -112,7 +117,9 @@ def _validate_request(data: dict) -> None:
         nu = float(l.get("nu"))
         if not (0.0 <= nu < 0.5):
             raise ValueError("Poisson ratio nu must be in [0, 0.5)")
-        lo = float(l.get("min_thickness", 0.0)); hi = float(l.get("max_thickness", 0.0))
+        if l.get("min_thickness") is None or l.get("max_thickness") is None:
+            raise ValueError("min_thickness and max_thickness are required for every layer")
+        lo = float(l.get("min_thickness")); hi = float(l.get("max_thickness"))
         fx = float(l.get("fixed_thickness", 0.0))
         if lo < 0 or hi < 0 or fx < 0:
             raise ValueError("Thickness must be non-negative (>= 0)")
@@ -121,6 +128,12 @@ def _validate_request(data: dict) -> None:
         g = l.get("geogrid")
         if g not in (None, "", "none") and g not in MIF_TABLE:
             raise ValueError(f"geogrid must be one of {sorted(MIF_TABLE)} or null (got {g!r})")
+    placement = geogrid_placement_error([
+        (l.get("layer_type"), l.get("geogrid"), l.get("E")) for l in layers
+        if str(l.get("layer_type") or "").strip().lower() != "subgrade"
+    ])
+    if placement:
+        raise ValueError(placement)
 
     for item in data.get("ctb_axle_spectrum") or []:
         if str(item.get("axle_type", "")).strip().lower() not in ("single", "tandem", "tridem"):
@@ -135,6 +148,8 @@ def _validate_request(data: dict) -> None:
         for v in vals:
             if v is not None and float(v) < 0:
                 raise ValueError(f"material_rates[{code}] values must be non-negative")
+        if isinstance(val, dict) and val.get("density") is not None and not float(val["density"]) > 0:
+            raise ValueError("density must be positive")
 
 
 def run_optimize(request_json_str: str) -> str:
@@ -191,6 +206,8 @@ def run_optimize(request_json_str: str) -> str:
             E = float(raw_E) if raw_E is not None else None
             nu = float(l.get("nu"))
             geogrid = l.get("geogrid")
+            if geogrid in ("", "none"):
+                geogrid = None  # same normalisation as the API validator
             is_fixed = bool(l.get("is_fixed", False))
             fixed_thickness = float(l.get("fixed_thickness", 0.0))
             min_thickness = float(l.get("min_thickness", 0.0))
@@ -323,7 +340,7 @@ def run_optimize(request_json_str: str) -> str:
         reinforcement_out = []
         for l in raw_layers:
             g = l.get("geogrid")
-            if g:
+            if g not in (None, "", "none"):
                 reinforcement_out.append({
                     "layer": l.get("layer_type"),
                     "geogrid": g,

@@ -135,12 +135,30 @@ class LayerInput(BaseModel):
     def h_non_negative(cls, v):
         if v < 0:
             raise ValueError("Layer thickness h must be >= 0")
+        if 0 < v < 1.0:
+            raise ValueError("Layers thinner than 1 mm are not modelled; use 0 for the half-space")
         return v
 
 
 class AnalysisPointInput(BaseModel):
     z: float
     r: float
+
+    @field_validator("z")
+    @classmethod
+    def z_valid(cls, v):
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("depth z must be finite and >= 0 mm")
+        return v
+
+    @field_validator("r")
+    @classmethod
+    def r_valid(cls, v):
+        from mep_opt.solver.burmister import MAX_RADIAL_OFFSET
+        if not math.isfinite(v) or abs(v) > MAX_RADIAL_OFFSET:
+            raise ValueError(
+                f"radial offset r must be finite and within {MAX_RADIAL_OFFSET:.0f} mm of the load")
+        return v
 
 
 class SolveRequest(BaseModel):
@@ -288,6 +306,13 @@ class MaterialRateOverride(BaseModel):
             raise ValueError("density must be positive")
         return v
 
+    @field_validator("transport_co2_factor")
+    @classmethod
+    def transport_non_negative(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("transport_co2_factor must be non-negative")
+        return v
+
 
 class AxleLoadGroupInput(BaseModel):
     axle_type: str          # "single" | "tandem" | "tridem"
@@ -373,6 +398,10 @@ class OptimizeRequest(BaseModel):
             if isinstance(val, MaterialRateOverride):
                 normalized[k] = val.model_dump(exclude_none=True)
             else:
+                # A bare number is the ₹/m³ rate; a negative rate would
+                # corrupt the Economy archetype.
+                if val < 0:
+                    raise ValueError(f"material_rates[{k}] must be non-negative")
                 normalized[k] = val
         return normalized
 
@@ -531,6 +560,13 @@ class OptimizeRequest(BaseModel):
             raise ValueError(
                 f"Duplicate layer_type entries are not allowed: {sorted(set(dups))}"
             )
+        from mep_opt.solver.irc37 import geogrid_placement_error
+        msg = geogrid_placement_error([
+            (l.layer_type, l.geogrid, l.E) for l in v
+            if str(l.layer_type).strip().lower() != "subgrade"
+        ])
+        if msg:
+            raise ValueError(msg)
         return v
 
 

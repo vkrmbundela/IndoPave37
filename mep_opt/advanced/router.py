@@ -8,6 +8,7 @@ conflict with existing /api/solve, /api/optimize, /api/report/pdf.
 import asyncio
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field, field_validator, model_validator
+import math
 from typing import Dict, List, Optional
 
 from .reserve import compute_reserve
@@ -72,6 +73,8 @@ class LayerData(BaseModel):
     def _thickness_non_negative(cls, v):
         if v < 0:
             raise ValueError("thickness must be non-negative")
+        if 0 < v < 1.0:
+            raise ValueError("layers thinner than 1 mm are not modelled; enter 0 to omit the layer")
         return v
 
     @field_validator("friction_factor")
@@ -127,15 +130,16 @@ class EvalPointData(BaseModel):
     @field_validator("z")
     @classmethod
     def _depth_non_negative(cls, v):
-        if v < 0:
-            raise ValueError("z must be non-negative")
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("z must be non-negative and finite")
         return v
 
     @field_validator("r")
     @classmethod
     def _radius_non_negative(cls, v):
-        if v < 0:
-            raise ValueError("r must be non-negative")
+        from mep_opt.solver.burmister import MAX_RADIAL_OFFSET
+        if not math.isfinite(v) or v < 0 or v > MAX_RADIAL_OFFSET:
+            raise ValueError(f"r must be non-negative, finite and <= {MAX_RADIAL_OFFSET:.0f} mm")
         return v
 
 class ReserveRequest(BaseModel):

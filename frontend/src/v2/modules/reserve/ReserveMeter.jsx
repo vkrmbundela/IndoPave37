@@ -88,13 +88,16 @@ export default function ReserveMeter({ sharedState }) {
     }
     setRolesOk(roles.ok);
 
-    const absT = (r) => Math.max(
-      Math.abs(r.eps_t || r.strain_t || 0),
-      Math.abs(r.eps_r || 0),
+    // IRC:37-2018 Annex III: the fatigue strain is the largest TENSILE
+    // horizontal strain (signed max of εt, εr); when every component is
+    // compressive "fatigue performance need not be checked" (sent as 0).
+    const tensT = (r) => Math.max(
+      Number(r.eps_t ?? r.strain_t ?? 0),
+      Number(r.eps_r ?? r.eps_t ?? r.strain_t ?? 0),
     );
     const absV = (r) => Math.abs(r.eps_z || r.strain_z || 0);
 
-    const maxEpsT = bitRows.length ? Math.max(...bitRows.map(absT)) : 0;
+    const maxEpsT = bitRows.length ? Math.max(0, ...bitRows.map(tensT)) : 0;
     const maxEpsV = subRows.length ? Math.max(...subRows.map(absV)) : 0;
 
     if (maxEpsV < 1e-15 && maxEpsT < 1e-15) return;

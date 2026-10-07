@@ -101,6 +101,13 @@ ADVANCED_MATERIALS: dict[str, dict] = {
 }
 
 
+# The engine's material categories (MATERIAL_DB) are finer than the Material
+# Picker's tabs (bituminous / granular / cement_treated / recycled /
+# stabilized); map the engine-only ones onto a tab so every base material is
+# listed under one.
+_PICKER_CATEGORY = {"cold_recycled": "recycled", "bituminous_macadam": "bituminous"}
+
+
 def get_full_library() -> list[dict]:
     """
     Return the complete material library: base MATERIAL_DB + advanced materials.
@@ -114,7 +121,7 @@ def get_full_library() -> list[dict]:
         entry = {
             "code": code,
             "name": mat.name,
-            "category": mat.category,
+            "category": _PICKER_CATEGORY.get(mat.category, mat.category),
             "E_default": mat.default_modulus,
             "nu": mat.poisson,
             "density": mat.density,
@@ -159,7 +166,7 @@ def get_material_by_code(code: str) -> Optional[dict]:
         return {
             "code": code_upper,
             "name": mat.name,
-            "category": mat.category,
+            "category": _PICKER_CATEGORY.get(mat.category, mat.category),
             "E_default": mat.default_modulus,
             "nu": mat.poisson,
             "density": mat.density,

@@ -4,7 +4,7 @@
 // ASCII-safe because jsPDF's built-in fonts don't carry ε/σ/≤/✓ glyphs.
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { subgradeModulusFromCBR } from './irc';
+import { subgradeModulusFromCBR, requiredReliabilityPercent } from './irc';
 
 const BRAND = [232, 99, 26];
 const BRAND_DK = [184, 78, 18];
@@ -29,6 +29,25 @@ const allowableStrain = (eps, cdf, n) => {
   return (eps > 0 && cdf > 0) ? eps * Math.pow(cdf, -1 / n) : null;
 };
 const ue = (v) => (v == null ? '--' : `${(Math.abs(num(v)) * 1e6).toFixed(1)} ue`);
+
+const ROAD_CATEGORY_LABEL = { nh: 'National Highway', sh: 'State Highway', expressway: 'Expressway', urban: 'Urban road', other: 'Other road' };
+const IMPORTANT_ROADS = new Set(['expressway', 'nh', 'sh', 'urban']);
+
+// Reliability level ('R90' / 'R80') the ENGINE used for this design (after
+// the IRC:37-2018 Sec 3.7 escalation): the design's `reliability` or
+// `details.reliability`. Only when neither is reported, fall back to the
+// Sec 3.7 rule - 90% for Expressways / NH / SH / urban roads at any traffic,
+// other roads 90% at >= 20 msa, else 80% (MSA-only when the category is unknown).
+function reliabilityLevel(sol, msa, roadCategory) {
+  const raw = sol?.reliability || sol?.details?.reliability;
+  const pct = raw ? parseInt(String(raw).replace(/[^0-9]/g, ''), 10) : NaN;
+  if (Number.isFinite(pct)) return pct >= 90 ? 'R90' : 'R80';
+  return requiredReliabilityPercent(msa, roadCategory) === 90 ? 'R90' : 'R80';
+}
+
+// True when the engine reported no tensile horizontal strain at the bottom of
+// the bituminous layer (fatigue not checked, IRC:37-2018 Annex III).
+const fatigueIsCompressive = (d) => !!d?.fatigue_compressive || num(d?.eps_t) < 0;
 
 // ---------------------------------------------------------------------------
 // Layout-robustness helpers. Overlaps come from two habits: advancing y by a
@@ -209,15 +228,19 @@ function designBasis(doc, traffic, cbr, sol, mix) {
   const msa = num(d.msa, num(traffic.msa));
   const c = num(cbr);
   const mr = subgradeModulusFromCBR(c);
+  const xYears = num(traffic.construction_years, 0);
+  const roadCat = d.road_category || traffic.road_category;
 
   y = sectionHeading(doc, y, 'Traffic', 'IRC:37-2018 Sec 4');
   y = kvTable(doc, y, [
-    ['Commercial vehicles / day (CVPD)', String(num(traffic.cvpd)), ''],
+    ['Road category', ROAD_CATEGORY_LABEL[roadCat] || (roadCat ? String(roadCat) : '--'), 'sets reliability, Sec 3.7'],
+    ['Commercial vehicles / day (CVPD)', String(num(traffic.cvpd)), 'P, at the last count'],
+    ['Years from count to opening (x)', `${xYears} years`, 'Eq 4.6: A = P(1+r)^x'],
     ['Annual growth rate', `${grPct.toFixed(1)} %`, ''],
     ['Vehicle damage factor (VDF)', String(num(traffic.vdf, 2.5)), 'std axles / CV'],
     ['Lane distribution factor (LDF)', String(num(traffic.ldf, 0.75)), 'design-lane share, Sec 4.5'],
     ['Design life', `${num(traffic.design_life, 20)} years`, ''],
-    ['Cumulative design traffic', `${msa.toFixed(2)} MSA`, '365.A.D.F.((1+r)^n-1)/r'],
+    ['Cumulative design traffic', `${msa.toFixed(2)} MSA`, '365.A.D.F.((1+r)^n-1)/r, A = P(1+r)^x'],
   ]);
   y = sectionHeading(doc, y, 'Subgrade', 'IRC:37-2018 Sec 6 - Eq 6.1/6.2, Cl 6.4.2');
   y = kvTable(doc, y, [
@@ -235,12 +258,11 @@ function designBasis(doc, traffic, cbr, sol, mix) {
     ['Layer interface', 'fully bonded', 'Sec 3.6.1'],
   ]);
   // Prefer the reliability the ENGINE actually used (post §3.7 escalation,
-  // reported on the solution details); fall back to the MSA heuristic.
-  const relUsed = d.reliability || (msa >= 20 ? 'R90' : 'R80');
-  const CAT = { nh: 'National Highway', sh: 'State Highway', expressway: 'Expressway', urban: 'Urban road', other: 'Other road' };
-  const catLabel = CAT[d.road_category] || null;
+  // reported on the solution); fall back to the §3.7 rule only when absent.
+  const relUsed = reliabilityLevel(sol, msa, roadCat);
+  const catLabel = ROAD_CATEGORY_LABEL[roadCat] || null;
   const rel = relUsed === 'R90'
-    ? (msa >= 20 ? '90% (>= 20 MSA)' : `90% (${catLabel || 'important road'})`)
+    ? (IMPORTANT_ROADS.has(roadCat) ? `90% (${catLabel})` : msa >= 20 ? '90% (>= 20 MSA)' : '90%')
     : `80% (${catLabel || 'other road'}, < 20 MSA)`;
   y = sectionHeading(doc, y, 'Reliability & Mix', 'IRC:37-2018 Sec 3.7, 3.6.2');
   const va = num(mix?.airVoids, num(d.air_voids, 3));
@@ -356,7 +378,7 @@ function criterion(doc, y, title, clause, equation, rows, ok) {
   return doc.lastAutoTable.finalY + 5;
 }
 
-function compliance(doc, sol) {
+function compliance(doc, sol, traffic = {}) {
   let y = 24;
   doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(...INK);
   doc.text('3.  Mechanistic-Empirical Compliance Check', M, y); y += 8;
@@ -369,7 +391,7 @@ function compliance(doc, sol) {
 
   // Reliability the engine actually used (post §3.7 auto-escalation) — the
   // printed coefficients must match the computation, not always the R90 row.
-  const relUsed = d.reliability || (msa >= 20 ? 'R90' : 'R80');
+  const relUsed = reliabilityLevel(sol, msa, d.road_category || traffic.road_category);
   const rutCoeff = relUsed === 'R90' ? '1.41 x 10^-8' : '4.1656 x 10^-8';
   const fatCoeff = relUsed === 'R90' ? '0.5161' : '1.6064';
   const relPct = relUsed === 'R90' ? '90%' : '80%';
@@ -377,17 +399,27 @@ function compliance(doc, sol) {
   const cdfR = num(d.CDF_rutting), nr = num(d.NR);
   // NOTE: in IRC:37-2018, Eq. 3.1/3.2 are the FATIGUE models and Eq. 3.3/3.4
   // are the RUTTING models (an earlier report revision had them swapped).
-  y = criterion(doc, y, 'Subgrade Rutting', 'IRC:37 Sec 3.6.1 - Eq 3.3/3.4',
+  y = criterion(doc, y, 'Subgrade Rutting', 'IRC:37 Sec 3.6.1 - Eq 3.1/3.2',
     `N_R = ${rutCoeff} . (1/ev)^4.5337   (${relPct} reliability; ev = vertical compressive strain at top of subgrade)`,
     [['Quantity', 'Computed', 'Allowable', 'CDF (<=1.0)'],
      ['ev (top of subgrade)', ue(d.eps_v), ue(allowableStrain(d.eps_v, cdfR, RUT_EXP)), ''],
      ['N_R (allowable reps)', nr.toExponential(2), `>= ${nApp.toExponential(2)}`, cdfR.toFixed(3)]],
     cdfR <= 1.0);
 
-  if (Math.abs(num(d.eps_t)) > 1e-12) {
+  if (fatigueIsCompressive(d)) {
+    // Annex III: an all-compressive horizontal strain at the bituminous
+    // bottom means fatigue need not be checked (engine: CDF 0, Nf null).
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.4);
+    const note = doc.splitTextToSize(
+      `Bituminous fatigue cracking (Sec 3.6.2 - Eq 3.3/3.4): NOT CHECKED. Every horizontal strain at the bottom of the bituminous layer is compressive${d.eps_t != null ? ` (largest ${(num(d.eps_t) * 1e6).toFixed(1)} ue)` : ''}, so fatigue performance need not be checked (IRC:37-2018 Annex III).`,
+      CONTENT_W - 4);
+    y = ensureSpace(doc, y, note.length * lineHmm(doc) + 6);
+    doc.setTextColor(...MUTED);
+    y = textBlock(doc, note, M + 2, y + 3, CONTENT_W - 4) + 6;
+  } else if (Math.abs(num(d.eps_t)) > 1e-12) {
     const cdfF = num(d.CDF_fatigue), nf = num(d.Nf);
-    y = criterion(doc, y, 'Bituminous Fatigue Cracking', 'IRC:37 Sec 3.6.2 - Eq 3.1/3.2',
-      `N_f = ${fatCoeff} . C . 10^-4 . (1/et)^3.89 . (1/MRm)^0.854   (${relPct} reliability; et at bottom of the bottom bituminous layer)`,
+    y = criterion(doc, y, 'Bituminous Fatigue Cracking', 'IRC:37 Sec 3.6.2 - Eq 3.3/3.4',
+      `N_f = ${fatCoeff} . C . 10^-4 . (1/et)^3.89 . (1/MRm)^0.854   (${relPct} reliability; et = largest tensile horizontal strain at the bottom of the bottom bituminous layer)`,
       [['Quantity', 'Computed', 'Allowable', 'CDF (<=1.0)'],
        ['et (bottom of bound layer)', ue(d.eps_t), ue(allowableStrain(d.eps_t, cdfF, FAT_EXP)), ''],
        ['N_f (allowable reps)', nf.toExponential(2), `>= ${nApp.toExponential(2)}`, cdfF.toFixed(3)]],
@@ -423,10 +455,12 @@ function compliance(doc, sol) {
               : 'OVERALL: NOT ADEQUATE - revise layer thicknesses or materials.', M + 3, y + 5.6);
 }
 
-function clausesAndAlternatives(doc, sol, designs, granularAutoE) {
+function clausesAndAlternatives(doc, sol, designs, granularAutoE, traffic = {}) {
   let y = 24;
   doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(...INK);
   doc.text('4.  IRC:37 Clause Compliance', M, y); y += 8;
+  const sd = sol.details || {};
+  const relPct = reliabilityLevel(sol, num(sd.msa, num(traffic.msa)), sd.road_category || traffic.road_category) === 'R90' ? '90%' : '80%';
   const hasCtb = (sol.details || {}).CDF_ctb != null;
   const hasSpectrum = !!((sol.details || {}).ctb_details && sol.details.ctb_details.details && sol.details.ctb_details.details.length);
   // Each item: [status, text, clause]. Status 'OK' only when the analysis
@@ -435,12 +469,14 @@ function clausesAndAlternatives(doc, sol, designs, granularAutoE) {
   const items = [
     ['OK', 'Standard axle: dual wheels, 2 x 20 kN at 0.56 MPa, 310 mm c/c', 'Sec 3.6.1'],
     ['OK', 'ev evaluated at the top of the subgrade (rutting)', 'Sec 3.6.1'],
-    ['OK', 'et evaluated at the bottom of the bottom bituminous layer (fatigue)', 'Sec 3.6.2'],
+    fatigueIsCompressive(sd)
+      ? ['N/A', 'Fatigue not checked: every horizontal strain at the bottom of the bituminous layer is compressive', 'Annex III']
+      : ['OK', 'et = largest tensile horizontal strain at the bottom of the bottom bituminous layer (fatigue)', 'Sec 3.6.2'],
     ['OK', 'Subgrade MRS from Eq. 6.1/6.2, capped at 100 MPa', 'Sec 6.3 / Cl 6.4.2'],
     granularAutoE
       ? ['OK', 'Granular modulus from Eq. 7.1; unbound base+sub-base combined', 'Sec 7.2.3']
       : ['N/A', 'Granular moduli USER-SPECIFIED (Auto Eq. 7.1 off) - Eq. 7.1 / Sec 7.2.3 not applied; justify pinned values from material testing', 'Sec 7.2.3'],
-    ['OK', 'Reliability auto-set: 90% for >= 20 MSA, else 80%', 'Sec 3.7'],
+    ['OK', `Reliability: 90% for Expressways, National Highways, State Highways and Urban Roads at any traffic; other roads 90% at >= 20 MSA, else 80% (this design: ${relPct})`, 'Sec 3.7'],
     ['OK', 'All cumulative damage factors checked against the 1.0 limit', 'Sec 3.6'],
   ];
   if (hasCtb) {
@@ -502,8 +538,8 @@ export function buildPdfReport({ projectName, trafficParams, subgradeCbr, select
   cover(doc, projectName, traffic, subgradeCbr, sol);
   doc.addPage(); designBasis(doc, traffic, subgradeCbr, sol, mix);
   doc.addPage(); composition(doc, sol, granularAutoE);
-  doc.addPage(); compliance(doc, sol);
-  doc.addPage(); clausesAndAlternatives(doc, sol, adequateDesigns || [], granularAutoE);
+  doc.addPage(); compliance(doc, sol, traffic);
+  doc.addPage(); clausesAndAlternatives(doc, sol, adequateDesigns || [], granularAutoE, traffic);
   headerFooter(doc, doc.getNumberOfPages());
   return doc;
 }

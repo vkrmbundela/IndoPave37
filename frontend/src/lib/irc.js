@@ -30,7 +30,9 @@ export function bottomBituminousModulus(layers, numLayers) {
   let mod = null;
   for (let i = 0; i < n && i < layers.length; i++) {
     const t = classify(layers[i]);
-    if ([...BITUMINOUS].some((b) => t.includes(b))) {
+    // Exact type, or a whole-token match for free-text names. A substring
+    // test took WBM (unbound granular) as bituminous: 'WBM'.includes('BM').
+    if (BITUMINOUS.has(t) || /\b(BC|DBM|BM|SDBC|SMA)\b/.test(t)) {
       mod = Number(layers[i].E) || mod;   // keep the deepest bituminous layer
     }
   }
@@ -214,7 +216,14 @@ export async function computeGranularAutoE(layers, numLayers, subgradeCbr, solve
     const hTotal = granIdx.reduce((s, i) => s + nominalThickness(structural[i]), 0);
     if (hTotal <= 0) return [];
     const eComp = 0.2 * Math.pow(hTotal, 0.45) * mrs;
-    return granIdx.map((i) => ({ index: i, E: Math.round(eComp * 100) / 100, auto: true }));
+    // The engine analyses ONE combined layer with the thickness-weighted
+    // Poisson's ratio (0.35 unless the user changed it); giving every
+    // sub-layer the same E and nu reproduces that row exactly.
+    const nuComp = granIdx.reduce((s, i) => {
+      const nu = Number.isFinite(Number(structural[i].nu)) ? Number(structural[i].nu) : 0.35;
+      return s + nu * nominalThickness(structural[i]);
+    }, 0) / hTotal;
+    return granIdx.map((i) => ({ index: i, E: Math.round(eComp * 100) / 100, nu: nuComp, auto: true }));
   }
 
   const out = [];
@@ -274,7 +283,8 @@ export function classifyPointRoles(layers, numLayers, points, tolMm = 5) {
   structural.forEach((l) => {
     const t = typeOf(l);
     cum += nominalThickness(l);
-    if (BITUMINOUS.has(t) || [...BITUMINOUS].some((b) => t.includes(b))) bitBottom = cum;
+    // Exact type or whole token only — 'WBM' must not match 'BM'.
+    if (BITUMINOUS.has(t) || /\b(BC|DBM|BM|SDBC|SMA)\b/.test(t)) bitBottom = cum;
   });
   const subTop = cum;
 

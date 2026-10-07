@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Save, Play, Settings, Plus, Trash2, ArrowRight, Table2, Loader2, Info, X, Download, Upload, Book, RotateCcw, Database, Layers, Zap, AlertCircle, MoreHorizontal, IndianRupee, Activity
 } from 'lucide-react';
@@ -9,7 +9,7 @@ import { solveAnalysis, runOptimize, onSolverStatus, getSolverMode } from './lib
 import { useResizableTable } from './lib/useResizableTable';
 import {
   subgradeModulusFromCBR, cumulativeMSA, computeGranularAutoE,
-  ROAD_CATEGORIES, requiredReliabilityPercent,
+  ROAD_CATEGORIES, requiredReliabilityPercent, getMif,
 } from './lib/irc';
 import { generatePdfReport } from './lib/pdf-report';
 
@@ -341,7 +341,7 @@ const DEMO_CASES = [
     layers: [
       { id: '1', name: 'BC', E: 3000, nu: 0.35, fixed_h: 40, min_h: 30, max_h: 50, is_fixed: true },
       { id: '2', name: 'DBM', E: 3000, nu: 0.35, fixed_h: 80, min_h: 50, max_h: 250, is_fixed: true },
-      { id: '3', name: 'WMM', E: 450, nu: 0.35, fixed_h: 150, min_h: 100, max_h: 250, is_fixed: true },
+      { id: '3', name: 'WMM', E: 350, nu: 0.35, fixed_h: 150, min_h: 150, max_h: 250, is_fixed: true },
       { id: '4', name: 'CTSB', E: 600, nu: 0.25, fixed_h: 150, min_h: 100, max_h: 250, is_fixed: true },
       { id: '5', name: 'GSB', E: 150, nu: 0.35, fixed_h: 100, min_h: 100, max_h: 200, is_fixed: true },
       { id: '6', name: 'Subgrade', E: 50, nu: 0.35, fixed_h: 0, min_h: 0, max_h: 0, is_fixed: true },
@@ -416,6 +416,14 @@ function sanitizeMaterialRates(rates) {
   return out;
 }
 
+// Structural equality of two computeGranularAutoE results ([{index, E, auto}])
+// on the fields analysisLayers reads (index and E).
+function sameEngineModuli(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((x, k) => x.index === b[k].index && x.E === b[k].E && x.nu === b[k].nu);
+}
+
 // Selectable pavement material types (must match backend BITUMINOUS_TYPES /
 // GRANULAR_TYPES so the optimizer can classify each layer). Optional per layer.
 // Full material database with IRC:37-2018 names and default properties.
@@ -484,7 +492,7 @@ const DESIGN_DEFAULTS = {
 const getOverlayId = (l, isSubgrade) => {
   if (isSubgrade) return 'overlay-soil';
   const type = (l.type || l.name || '').toUpperCase();
-  if (type.includes('BC') || type.includes('DBM') || type.includes('SMA') || type.includes('SDBC') || type.includes('BM') || type.includes('PAVED') || type.includes('SURFACE')) {
+  if (/\bBM\b/.test(type) || type.includes('BC') || type.includes('DBM') || type.includes('SMA') || type.includes('SDBC') || type.includes('PAVED') || type.includes('SURFACE')) {
     return 'overlay-asphalt';
   }
   if (type.includes('WMM') || type.includes('WBM') || type.includes('BASE')) {
@@ -1220,7 +1228,9 @@ export default function App() {
         const updates = await computeGranularAutoE(layers, numLayers, subgradeCbr, solveAnalysis);
         if (cancelled) return;
         setAutoEError(null);
-        setEngineGranularE(updates);
+        // Keep the previous array when nothing changed, so analysisLayers
+        // (and every panel effect that depends on it) stays referentially stable.
+        setEngineGranularE(prev => (sameEngineModuli(prev, updates) ? prev : updates));
         setLayers(prev => {
           let changed = false;
           const next = prev.map((l, i) => {
@@ -1234,17 +1244,25 @@ export default function App() {
           return changed ? next : prev;
         });
       } catch (e) {
-        if (!cancelled) setAutoEError(e.message);
+        if (!cancelled) {
+          setAutoEError(e.message);
+          // Drop the stale engine moduli: they are keyed by array index, so
+          // after a layer edit they would land on whatever layer now has
+          // that index.
+          setEngineGranularE(prev => (prev.length ? [] : prev));
+        }
       }
     }, 250);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [layers, numLayers, subgradeCbr]);
 
   // Layers with the engine moduli substituted (what Evaluate / panels analyse).
-  const analysisLayers = layers.map((l, i) => {
+  // Memoised: it is passed to the advanced panels as sharedState.layers, and
+  // a fresh array on every render re-fired their effects (e.g. /reserve).
+  const analysisLayers = useMemo(() => layers.map((l, i) => {
     const u = engineGranularE.find(x => x.index === i);
-    return u ? { ...l, E: u.E } : l;
-  });
+    return u ? { ...l, E: u.E, ...(u.nu != null ? { nu: u.nu } : {}) } : l;
+  }), [layers, engineGranularE]);
 
   const designMsa = cumulativeMSA({ cvpd, growthRate, designLife, ldf, vdf, constructionYears });
   const reliabilityPercent = requiredReliabilityPercent(designMsa, roadCategory);
@@ -1280,11 +1298,12 @@ export default function App() {
       // (computed fresh so a pending auto-E update can never race the run).
       const engineE = await computeGranularAutoE(targetLayers, targetNum, targetCbr, solveAnalysis);
       const eOf = (l, i) => engineE.find(x => x.index === i)?.E ?? l.E;
+      const nuOf = (l, i) => engineE.find(x => x.index === i)?.nu ?? l.nu;
 
       const data = await solveAnalysis({
         layers: targetLayers.map((l, i) => ({
           E: eOf(l, i),
-          nu: l.nu,
+          nu: nuOf(l, i),
           h: i === targetLayers.length - 1 ? 0 : (l.is_fixed ? (l.fixed_h || 0) : (l.min_h || 0)),
         })),
         wheel_load: targetLoad,
@@ -1402,6 +1421,11 @@ export default function App() {
           vdf,
           ldf,
           design_life: designLife,
+          // x in IRC Eq. 4.6 (A = P(1+r)^x) and the §3.7 road category: both
+          // enter the engine's design MSA / reliability, so the printed
+          // inputs must include them to reproduce the printed result.
+          construction_years: constructionYears,
+          road_category: roadCategory,
         },
         subgradeCbr,
         selectedSolution: designs[0],
@@ -1726,6 +1750,7 @@ export default function App() {
                 <tbody>
                   {layers.map((l,i)=>{
                     const sub = i===layers.length-1;
+                    const hasGeogrid = !sub && !!l.geogrid && l.geogrid !== 'none';
                     return (
                       <tr key={i} className="border-b border-gray-100 hover:bg-orange-50/30" style={layerRT.rowH[i]?{height:layerRT.rowH[i]}:undefined}>
                         {/* Layer — positional identity */}
@@ -1820,9 +1845,19 @@ export default function App() {
                             disabled={sub || !!l.auto_E}
                             title={sub ? "Determined by Subgrade CBR (%) in Opt Target"
                               : l.auto_E ? "Auto — derived from IRC:37-2018 Eq. 7.1 (0.2·h^0.45·E_support); the optimizer re-derives it for every candidate thickness"
+                                + (hasGeogrid ? ". Shown value includes the SP:59 geogrid MIF." : "")
+                              : hasGeogrid ? "Pinned E on a geogrid layer is the unreinforced modulus; the SP:59 MIF is applied on top."
                               : ""}
                             className={cn(inp,"w-full min-w-0", (sub || l.auto_E) && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
                           />
+                          {!sub && !l.auto_E && hasGeogrid && (
+                            <div
+                              className="mt-0.5 text-[8px] leading-tight text-emerald-700"
+                              title="Pinned E on a geogrid layer is the unreinforced modulus; the SP:59 MIF is applied on top."
+                            >
+                              unreinforced E · MIF on top
+                            </div>
+                          )}
                           {!sub && AUTO_E_TYPES.has(layerType(l)) && (
                             <label
                               className="mt-0.5 flex items-center gap-1 cursor-pointer select-none"
@@ -1831,7 +1866,27 @@ export default function App() {
                               <input
                                 type="checkbox"
                                 checked={!!l.auto_E}
-                                onChange={e=>updateLayer(i,'auto_E', e.target.checked)}
+                                onChange={e=>{
+                                  const checked = e.target.checked;
+                                  setLayers(prev => prev.map((layer, j) => {
+                                    if (j !== i) return layer;
+                                    const updates = { ...layer, auto_E: checked };
+                                    // Auto -> pinned on a geogrid layer: the auto E
+                                    // already includes the MIF (computeGranularAutoE),
+                                    // but a pinned E is the UNREINFORCED modulus that
+                                    // gets the MIF on top. Store E / MIF (same getMif
+                                    // call and subgrade MRS as computeGranularAutoE)
+                                    // so the MIF is not applied twice.
+                                    if (layer.auto_E && !checked && layer.geogrid && layer.geogrid !== 'none') {
+                                      const mif = getMif(subgradeModulusFromCBR(subgradeCbr), layer.geogrid);
+                                      const curE = Number(layer.E);
+                                      if (mif > 0 && Number.isFinite(curE) && curE > 0) {
+                                        updates.E = Math.round((curE / mif) * 10) / 10;
+                                      }
+                                    }
+                                    return updates;
+                                  }));
+                                }}
                                 className="h-2.5 w-2.5 accent-orange-600 cursor-pointer"
                               />
                               <span className={cn("text-[9px] font-bold uppercase", l.auto_E ? "text-orange-700" : "text-slate-400")}>
@@ -2315,10 +2370,16 @@ export default function App() {
                                 actually limits. CDF bars alone hide the primary quantities
                                 an engineer checks against the standard. */}
                             <div className="flex flex-wrap gap-x-3 gap-y-0.5 px-0.5 text-[9px] font-mono text-gray-500">
-                              {d.details?.eps_t != null && Math.abs(d.details.eps_t) > 1e-12 && (
-                                <span title={`Horizontal tensile strain at the bottom of the bottom bituminous layer (max of |εt|, |εr|). Allowable Nf ≈ ${d.details?.Nf != null && isFinite(d.details.Nf) ? (d.details.Nf / 1e6).toFixed(1) + ' msa' : '—'}.`}>
-                                  ε_t <b className="text-orange-800">{(Math.abs(d.details.eps_t) * 1e6).toFixed(1)}</b> µε
-                                </span>
+                              {(d.details?.fatigue_compressive || (d.details?.eps_t != null && Math.abs(d.details.eps_t) > 1e-12)) && (
+                                (d.details?.fatigue_compressive || d.details.eps_t < 0) ? (
+                                  <span title={`Every horizontal strain (ε_t, ε_r) at the bottom of the bituminous layer is compressive${d.details?.eps_t != null ? ` (largest ${(d.details.eps_t * 1e6).toFixed(1)} µε)` : ''}, so fatigue performance need not be checked (IRC:37-2018 Annex III).`}>
+                                    ε_t <b className="text-slate-600">compressive — fatigue not checked (IRC Annex III)</b>
+                                  </span>
+                                ) : (
+                                  <span title={`Largest tensile horizontal strain at the bottom of the bottom bituminous layer — max of the signed ε_t, ε_r over the bottom-of-bituminous points (IRC:37-2018 Annex III). Allowable Nf ≈ ${d.details?.Nf != null && isFinite(d.details.Nf) ? (d.details.Nf / 1e6).toFixed(1) + ' msa' : '—'}.`}>
+                                    ε_t <b className="text-orange-800">{(d.details.eps_t * 1e6).toFixed(1)}</b> µε
+                                  </span>
+                                )
                               )}
                               {d.details?.eps_v != null && (
                                 <span title={`Vertical compressive strain at the top of the subgrade (IRC §3.6.1). Allowable N_R ≈ ${d.details?.NR != null && isFinite(d.details.NR) ? (d.details.NR / 1e6).toFixed(1) + ' msa' : '—'}.`}>
@@ -2404,11 +2465,13 @@ export default function App() {
               <div className="flex flex-col">
                 {/* Peak-response strip: the solve response's governing maxima
                     (surface deflection + design strains) were previously
-                    computed but never displayed. ε_h uses max(|ε_t|,|ε_r|),
-                    the quantity the IRC fatigue criterion actually takes. */}
+                    computed but never displayed. ε_h is the largest TENSILE
+                    horizontal strain, max of the signed ε_t, ε_r (tension +),
+                    floored at 0 — the quantity the IRC fatigue criterion takes
+                    (Annex III: an all-compressive strain is not checked). */}
                 {(() => {
                   const maxDisp = Math.max(0, ...results.map(r => Math.abs(r.disp_z || 0)));
-                  const maxEpsH = Math.max(0, ...results.map(r => Math.max(Math.abs(r.eps_t || 0), Math.abs(r.eps_r || 0))));
+                  const maxEpsH = Math.max(0, ...results.map(r => Math.max(Number(r.eps_t) || 0, Number(r.eps_r) || 0)));
                   const maxEpsZ = Math.max(0, ...results.map(r => Math.abs(r.eps_z || 0)));
                   return (
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 border-b border-gray-100 bg-orange-50/20 text-[10px] font-mono text-gray-600">
@@ -2416,8 +2479,8 @@ export default function App() {
                       <span title="Maximum |δ_z| across the evaluated points (mm)">
                         δ_z,max <b className="text-slate-800">{maxDisp.toFixed(3)}</b> mm
                       </span>
-                      <span title="Maximum horizontal tensile strain across the evaluated points, max(|ε_t|, |ε_r|) — the fatigue-governing quantity at the bituminous bottom">
-                        ε_h,max <b className="text-orange-800">{(maxEpsH * 1e6).toFixed(1)}</b> µε
+                      <span title="Largest TENSILE horizontal strain across the evaluated points — max of the signed ε_t, ε_r (tension positive), 0 when every value is compressive. At the bituminous bottom this is the fatigue strain; if it is all compressive, fatigue need not be checked (IRC:37-2018 Annex III).">
+                        ε_h,max (tensile) <b className="text-orange-800">{(maxEpsH * 1e6).toFixed(1)}</b> µε
                       </span>
                       <span title="Maximum |ε_z| across the evaluated points — rutting-governing at the top of the subgrade">
                         ε_z,max <b className="text-red-700">{(maxEpsZ * 1e6).toFixed(1)}</b> µε
@@ -2446,7 +2509,7 @@ export default function App() {
                     <th className="py-2 px-3 border-b border-gray-200">δ_z</th>
                     <th
                       className="py-2 px-3 border-b border-orange-200 border-l border-orange-200 bg-orange-50/60 text-orange-700 cursor-help"
-                      title="ε_r — radial horizontal strain. The IRC:37 fatigue criterion uses max(|ε_t|, |ε_r|); under dual wheels at R = 155 mm, ε_r frequently GOVERNS over ε_t. Previously computed but not displayed."
+                      title="ε_r — radial horizontal strain (tension positive). The IRC:37 fatigue criterion uses the largest TENSILE horizontal strain, max of the signed ε_t, ε_r at the bottom of the bituminous layer; under dual wheels at R = 155 mm, ε_r can govern over ε_t. If both are compressive, fatigue is not checked (IRC:37-2018 Annex III)."
                     >ε_r<span className="text-gray-400 align-super text-[7px] ml-0.5">&#9432;</span></th>
                     <th className="py-2 px-3 border-b border-orange-200 border-l border-orange-200 bg-orange-50 text-red-700 sticky right-24 z-20">ε_z</th>
                     <th className="py-2 px-3 border-b border-orange-200 border-l border-orange-300 bg-orange-100 text-orange-900 sticky right-0 z-20">ε_t</th>
@@ -2776,7 +2839,7 @@ export default function App() {
                         <div>
                           <h4 className="font-bold text-[var(--text-bold)] text-[11px] mb-1">🚒 Cement Treated Base (CTB) Axle Spectrum Analysis</h4>
                           <p className="text-[11px]">
-                            CTB fatigue is always checked with the strain-based IRC:37-2018 Eq. 3.5 criterion against the design traffic. Supplying an axle load spectrum additionally runs the stress-ratio cumulative damage analysis (Eq. 3.6, $CFD \le 1.0$) against the CTB Modulus of Rupture ($M_{rup} = 1.4$ MPa) — the worse of the two governs.
+                            CTB fatigue is always checked with the strain-based IRC:37-2018 Eq. 3.5 criterion against the design traffic. Supplying an axle load spectrum additionally runs the stress-ratio cumulative damage analysis (Eq. 3.6, CFD ≤ 1.0) against the CTB Modulus of Rupture (M<sub>rup</sub> = 1.4 MPa) — the worse of the two governs.
                           </p>
                         </div>
                       </div>

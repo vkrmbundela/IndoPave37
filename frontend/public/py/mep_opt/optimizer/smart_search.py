@@ -39,6 +39,7 @@ from mep_opt.solver.irc37 import (
     BituminousLayerInput, GranularLayerInput, build_layer_stack,
     required_reliability, ctb_reliability_factor, expand_axle_spectrum,
     GRANULAR_OVER_CTSB_MODULUS, BitumenGrade, get_bituminous_modulus,
+    bituminous_fatigue_strain, GEOGRID_ELIGIBLE_TYPES,
 )
 from mep_opt.solver.materials import get_modulus, get_poisson
 from mep_opt.solver.legacy_bridge import (
@@ -72,6 +73,9 @@ COLD_RECYCLED_TYPES = {"RAP"}
 # interlayer (assigned a fixed 450 MPa when sandwiched directly above a CTB),
 # or as a granular base over a CTSB (300/350 MPa, §8.1 / Table 11.1).
 UNBOUND_CRACK_RELIEF_TYPES = {"WMM", "WBM", "GSB", "CRL"}
+# Unbound BASE courses (IRC:37-2018 §8.1: WMM, WBM, crusher-run macadam ...);
+# GSB is a sub-base with its own §7.2.2 minimum.
+UNBOUND_BASE_TYPES = {"WMM", "WBM"}
 # IRC:37-2018 page 27 — fixed resilient modulus of the sandwiched granular
 # crack-relief layer above a cement-treated base.
 CRACK_RELIEF_MODULUS_MPA = 450.0
@@ -128,6 +132,21 @@ class SmartPavementSearch:
         _msa = self.problem.traffic.cumulative_msa()
         _cat = getattr(self.problem, 'road_category', 'other')
         self._reliability = required_reliability(_msa, _cat, self.problem.reliability)
+        # A geogrid in an all-unbound granular stack switches the analysis
+        # from the §7.2.3 composite layer to separately estimated moduli
+        # (IRC:37-2018 §7.2.3 / §8.1 for reinforced layers), which for a small
+        # MIF can be softer than the conventional section. IRC:SP:59 §3.1.3
+        # measures reinforcement against the conventional IRC section (steps
+        # 2 and 4), so such designs are also checked as the conventional
+        # section and the reinforcement credit is never negative.
+        _props = self.problem.layer_props or {}
+        _gran = [lt for lt in self.problem.layer_types if lt not in BITUMINOUS_TYPES]
+        self._geogrid_vs_conventional = (
+            len(_gran) > 1
+            and all(lt in UNBOUND_CRACK_RELIEF_TYPES for lt in _gran)
+            and not any((_props.get(lt) or {}).get('E') is not None for lt in _gran)
+            and any((_props.get(lt) or {}).get('geogrid') not in (None, "", "none") for lt in _gran)
+        )
         if self._reliability != self.problem.reliability:
             logger.warning(
                 "Reliability escalated %s -> %s per IRC:37-2018 §3.7 "
@@ -266,9 +285,10 @@ class SmartPavementSearch:
     # Core evaluation (same bridge call as old GA)
     # ------------------------------------------------------------------
 
-    def _build_solver_inputs(self, thicknesses: List[float]):
+    def _build_solver_inputs(self, thicknesses: List[float], conventional: bool = False):
         """
-        Build the layer stack from thicknesses.
+        Build the layer stack from thicknesses. With conventional=True every
+        geogrid is ignored (the conventional IRC section of IRC:SP:59 §3.1.3).
 
         Returns: (solver_stack, cost_specs, input_bituminous, ctb_depth)
         where ctb_depth is the depth (mm) to the bottom of the CTB layer if
@@ -277,6 +297,9 @@ class SmartPavementSearch:
         layer_types = self.problem.layer_types
         subgrade = self.problem.subgrade
         props_all = self.problem.layer_props or {}
+        if conventional:
+            props_all = {k: {kk: vv for kk, vv in (v or {}).items() if kk != 'geogrid'}
+                         for k, v in props_all.items()}
 
         cost_specs = []
         input_bituminous = []
@@ -354,7 +377,7 @@ class SmartPavementSearch:
                 raise ValueError(f"Unsupported layer type {l_type!r}")
 
         solver_stack = build_layer_stack(
-            subgrade, input_granular, input_bituminous, self.problem.layer_props
+            subgrade, input_granular, input_bituminous, props_all
         )
 
         # Depth (mm from surface) to the bottom of the CTB layer, if any.
@@ -372,13 +395,31 @@ class SmartPavementSearch:
 
     def _evaluate(self, thicknesses: List[float]) -> dict:
         """
+        Evaluate one thickness combination. A geogrid-reinforced all-unbound
+        stack is also evaluated as the conventional section; the less
+        critical of the two is kept (IRC:SP:59 §3.1.3: reinforcement is
+        credited relative to the conventional IRC section, never against it).
+        """
+        res = self._evaluate_stack(thicknesses)
+        if getattr(self, "_geogrid_vs_conventional", False):
+            conv = self._evaluate_stack(thicknesses, conventional=True)
+            if self._governing_cdf(conv) < self._governing_cdf(res):
+                conv["geogrid_credit"] = (
+                    "not taken: the conventional section (IRC:37 §7.2.3 composite, "
+                    "no MIF) is less critical (IRC:SP:59 §3.1.3)")
+                return conv
+            res["geogrid_credit"] = "applied"
+        return res
+
+    def _evaluate_stack(self, thicknesses: List[float], conventional: bool = False) -> dict:
+        """
         Run IIT Pave for one thickness combination.
         Returns dict with eps_t, eps_v, CDF values, adequacy, cost, co2.
         If a CTB layer is present, also evaluates CTB tensile stress and
         includes CDF_ctb in the overall adequacy decision.
         """
         solver_stack, cost_specs, input_bituminous, ctb_depth = \
-            self._build_solver_inputs(thicknesses)
+            self._build_solver_inputs(thicknesses, conventional=conventional)
 
         depth_bit = sum(l.thickness for l in input_bituminous)
         depth_sub = sum(l['thickness'] for l in solver_stack[:-1])
@@ -408,7 +449,8 @@ class SmartPavementSearch:
         # Build the optimizer's physics-meaningful eval points and track each
         # point's role by index. This mirrors the IRC example layout used by
         # the benchmark suite: r ∈ {0, 155} at the critical locations, with
-        # fatigue using max(|eps_t|, |eps_r|) at the bituminous bottom.
+        # fatigue using the largest tensile eps_t / eps_r at the bituminous
+        # bottom (IRC:37-2018 Annex II / III).
         # We split into two parallel lists so the standard-pressure (0.56 MPa)
         # bridge call gets bit_bottom + sub_top, and the CTB-pressure (0.80 MPa)
         # bridge call gets ctb_bottom only.
@@ -500,19 +542,17 @@ class SmartPavementSearch:
 
         # Fatigue strain — only meaningful when bituminous layers exist.
         # Granular-only sections have no fatigue criterion (eps_t = 0 → CDF = 0).
-        # IRC:37-2018 Table 3.1 notes: (a) only ABSOLUTE values of strains and
-        # stresses are used in the performance equations; (b) under thin
-        # bituminous layers / strong bases the strain at the bottom of the
-        # bituminous layer may be compressive. Hence the largest |eps| of the
-        # two horizontal components at r = 0 and r = 155 mm.
+        # IRC:37-2018 Annex II/III: the largest TENSILE value of the two
+        # horizontal components at r = 0 and r = 155 mm; when every component
+        # is compressive (thin layers / strong bases, Table 3.1 note (b)),
+        # "fatigue performance need not be checked" (Annex III) and the
+        # reported strain is the compressive value (negative).
+        fatigue_compressive = False
         if "bit_bottom" in std_idx_map:
             bit_results = [results_std[i] for i in std_idx_map["bit_bottom"]]
-            eps_t = max(
-                max(abs(r["eps_t"]), abs(r.get("eps_r", 0.0)))
-                for r in bit_results
-            )
+            eps_t, eps_t_reported, fatigue_compressive = bituminous_fatigue_strain(bit_results)
         else:
-            eps_t = 0.0
+            eps_t = eps_t_reported = 0.0
 
         # Rutting vertical strain — always present
         sub_results = [results_std[i] for i in std_idx_map["sub_top"]]
@@ -610,18 +650,25 @@ class SmartPavementSearch:
             ctb_spec = list(getattr(self.problem, "ctb_axle_spectrum", None) or [])
             if ctb_spec:
                 others_pass = bool(chk["overall_adequate"]) and ctb_adequate
-                if others_pass or getattr(self.problem, "ctb_per_class_bridge_recompute", False):
+                if (others_pass
+                        or getattr(self.problem, "ctb_per_class_bridge_recompute", False)
+                        or getattr(self, "_force_ctb_spectrum", False)):
                     ctb_details = self._ctb_spectrum_damage(
                         solver_stack, load_standard, ctb_points, ctb_spec, mor,
                     )
                     ctb_cdf = max(ctb_cdf_strain, ctb_details["CDF_ctb"])
                     ctb_adequate = ctb_adequate and ctb_details["ctb_adequate"]
                 else:
+                    # The design already fails; skip the per-class solves.
+                    # CDF_ctb then holds only the Eq. 3.5 value, a LOWER
+                    # bound of the full CTB damage (see
+                    # _closest_to_passing_diagnostic, which completes it).
                     ctb_details = {
                         "CDF_ctb": None,
                         "ctb_adequate": None,
                         "details": [],
-                        "skipped": "design already fails another IRC criterion",
+                        "skipped": "design already fails another IRC criterion; "
+                                   "CDF_ctb is the Eq. 3.5 value only",
                     }
 
         overall_adequate = bool(chk["overall_adequate"]) and ctb_adequate
@@ -638,7 +685,8 @@ class SmartPavementSearch:
         return {
             "thicknesses": list(thicknesses),
             "total_thickness": sum(thicknesses),
-            "eps_t": eps_t,
+            "eps_t": eps_t_reported,
+            "fatigue_compressive": fatigue_compressive,
             "eps_v": eps_v,
             "sigma_t_ctb": sigma_t_ctb,
             "eps_t_ctb": eps_t_ctb,
@@ -687,6 +735,11 @@ class SmartPavementSearch:
             load_cfg = dict(load_standard)
             load_cfg["load"] = c["wheel_load_n"]
             load_cfg["pressure"] = 0.80  # IRC:37-2018 §3.6.3.2
+            # wheel load = axle/4 presumes one DUAL set per half axle; IRC
+            # analyses every class with the dual set (Annex II.4: "wheel load
+            # set of 2 (dual wheel)"), whatever the standard-axle wheel type.
+            load_cfg["is_dual"] = True
+            load_cfg["spacing"] = load_standard.get("spacing") or 310.0
             try:
                 rows = self._bridge_call(solver_stack, load_cfg, ctb_points)
             except Exception as e:
@@ -838,9 +891,14 @@ class SmartPavementSearch:
         Thickness rules stated explicitly in IRC:37-2018 (always enforced):
           * §9.2 (p. 42): pavements with a CTB carrying > 20 msa need a
             combined bituminous surface + base/binder thickness >= 100 mm;
-          * §8.1: unbound granular layers >= 150 mm, except the crack-relief
-            layer over a CTB, which is 100 mm (>= 100 mm accepted);
+          * §8.1: unbound granular base (WMM/WBM) >= 150 mm, except the
+            crack-relief layer over a CTB, which is 100 mm (>= 100 mm accepted);
+          * §7.2.2 (i)/(iii): any granular sub-base (drainage / filter) layer
+            >= 100 mm (the 150 mm single filter-cum-drainage layer of (ii) is
+            a functional choice the input does not identify);
+          * §8.2.1: cement treated base >= 100 mm;
           * §8.4: emulsion/foam bitumen stabilised RAP base >= 100 mm.
+        The CTSB 200 mm of §7.3.1 is only "recommended" and is not enforced.
         Returns a description of the first violation, or None.
         """
         layer_types = [str(lt).upper().strip() for lt in self.problem.layer_types]
@@ -854,9 +912,15 @@ class SmartPavementSearch:
             if lt == "CRL" or (lt in UNBOUND_CRACK_RELIEF_TYPES and below in CTB_TYPES):
                 if combo[i] < 100.0 - 1e-9:
                     return f"crack-relief layer {lt} < 100 mm (IRC:37-2018 §8.1)"
-            elif lt in UNBOUND_CRACK_RELIEF_TYPES:
+            elif lt in UNBOUND_BASE_TYPES:
                 if combo[i] < 150.0 - 1e-9:
-                    return f"unbound granular layer {lt} < 150 mm (IRC:37-2018 §8.1)"
+                    return f"unbound granular base {lt} < 150 mm (IRC:37-2018 §8.1)"
+            elif lt in UNBOUND_CRACK_RELIEF_TYPES:
+                if combo[i] < 100.0 - 1e-9:
+                    return f"granular sub-base {lt} < 100 mm (IRC:37-2018 §7.2.2)"
+            elif lt in CTB_TYPES:
+                if combo[i] < 100.0 - 1e-9:
+                    return "cement treated base < 100 mm (IRC:37-2018 §8.2.1)"
             elif lt in COLD_RECYCLED_TYPES:
                 if combo[i] < 100.0 - 1e-9:
                     return "stabilised RAP base < 100 mm (IRC:37-2018 §8.4)"
@@ -874,18 +938,24 @@ class SmartPavementSearch:
         """
         if self._irc_mandatory_violation(combo) is not None:
             return False
+        return self._tier_violation(combo) is None
 
+    def _tier_violation(self, combo: Tuple[float, ...]) -> Optional[str]:
+        """First traffic-tier practice-minimum violation of `combo`, or None
+        (always None with ignore_minimum_thickness)."""
         if getattr(self.problem, 'ignore_minimum_thickness', False):
-            return True
+            return None
 
         layer_mins, bundle_min = self._resolve_min_thickness_tier()
         layer_types = self.problem.layer_types
+        hint = ("traffic-tier practice minimum; override traffic_tier_minimums "
+                "or set ignore_minimum_thickness")
 
         # Per-layer minimums
         for i, lt in enumerate(layer_types):
             lt_up = str(lt).upper().strip()
             if lt_up in layer_mins and combo[i] < layer_mins[lt_up]:
-                return False
+                return f"{lt_up} < {layer_mins[lt_up]:g} mm ({hint})"
 
         # Bituminous bundle — sum of all bituminous-class layers
         if bundle_min > 0:
@@ -894,9 +964,9 @@ class SmartPavementSearch:
                 if str(lt).upper().strip() in BITUMINOUS_TYPES
             )
             if bit_total < bundle_min:
-                return False
+                return f"bituminous bundle < {bundle_min:g} mm ({hint})"
 
-        return True
+        return None
 
     # ------------------------------------------------------------------
     # Lift-aware enumeration of constructable thickness combinations
@@ -935,10 +1005,16 @@ class SmartPavementSearch:
         # Apply IRC 37 / MoRTH minimum-thickness pre-filter BEFORE evaluation.
         # Catches non-compliant designs before they consume any bridge calls.
         before = len(combos)
-        self._prefilter_reasons = sorted({
-            v for v in (self._irc_mandatory_violation(c) for c in combos) if v
-        })
-        combos = [c for c in combos if self._passes_irc_minimums(c)]
+        reasons = set()
+        kept = []
+        for c in combos:
+            v = self._irc_mandatory_violation(c) or self._tier_violation(c)
+            if v:
+                reasons.add(v)
+            else:
+                kept.append(c)
+        self._prefilter_reasons = sorted(reasons)
+        combos = kept
         self._prefilter_emptied = before > 0 and not combos
         dropped = before - len(combos)
         if dropped:
@@ -1411,7 +1487,7 @@ class SmartPavementSearch:
                 infeasibility_msg = (
                     f"Infeasible at given bounds for {msa:.1f} MSA traffic: every "
                     f"thickness combination violates a minimum-thickness rule — "
-                    f"{'; '.join(reasons)}. Raise the thickness bounds."
+                    f"{'; '.join(reasons)}. Raise the thickness bounds of the layers named."
                 )
             else:
                 infeasibility_msg = (
@@ -1477,7 +1553,28 @@ class SmartPavementSearch:
             (self._governing_cdf(d), d) for d in evaluated
         ]
         scored.sort(key=lambda x: x[0])
-        max_cdf, best = scored[0]
+        # Designs whose CTB axle-spectrum check was skipped carry only the
+        # Eq. 3.5 CTB damage, a lower bound of their governing CDF. Complete
+        # them in ascending order until no remaining lower bound can beat
+        # the best complete design (bounded number of re-evaluations).
+        best_cdf, best = None, None
+        completions = 0
+        for cdf, d in scored:
+            if best_cdf is not None and cdf >= best_cdf:
+                break
+            if (d.get("ctb_details") or {}).get("skipped") and completions < 25:
+                completions += 1
+                self._force_ctb_spectrum = True
+                try:
+                    d = self._evaluate(list(d.get("thicknesses") or []))
+                    cdf = self._governing_cdf(d)
+                except Exception:
+                    logger.exception("CTB spectrum completion failed for %s", d.get("thicknesses"))
+                finally:
+                    self._force_ctb_spectrum = False
+            if best_cdf is None or cdf < best_cdf:
+                best_cdf, best = cdf, d
+        max_cdf = best_cdf
         return {
             "max_cdf": max_cdf,
             "thicknesses": best.get("thicknesses"),
@@ -1492,8 +1589,21 @@ class SmartPavementSearch:
         layer_types = self.problem.layer_types
         bounds = self.problem.thickness_bounds or {}
         out: List[float] = []
+        per_layer: List[List[float]] = []
         for lt in layer_types:
             lo, hi = bounds.get(lt, (50.0, 200.0))
             options = self._layer_lift_values(lt, lo, hi)
+            per_layer.append(options)
             out.append(options[0] if options else float(lo))
+        # Prefer the thinnest combination that meets the mandatory IRC
+        # thickness rules, so the preliminary design never breaks the rule
+        # the infeasibility message cites.
+        n = 1
+        for opts in per_layer:
+            n *= max(1, len(opts))
+        if all(per_layer) and n <= 200_000:
+            ok = [c for c in itertools.product(*per_layer)
+                  if self._irc_mandatory_violation(c) is None]
+            if ok:
+                return list(min(ok, key=sum))
         return out

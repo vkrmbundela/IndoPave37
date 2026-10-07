@@ -277,7 +277,8 @@ def test_ctb_rf_not_tied_to_reliability():
     )
     out = SmartPavementSearch(p)._evaluate([40, 50, 100, 150, 200])
     assert out["reliability"] == "R80" and out["ctb_rf"] == 1.0
-    assert out["CDF_ctb_strain"] > 1.0       # the old RF = 2 halved this to ~0.82
+    # RF = 1 gives 2.24; the old RF = 2 halved it to 1.12 (pinned, so RF = 2 fails).
+    assert out["CDF_ctb_strain"] == pytest.approx(2.2375, rel=2e-3)
 
 
 # --------------------------------------------------------------------------
@@ -323,7 +324,8 @@ def test_geogrid_on_fixed_modulus_layer_rejected():
 
 
 def test_irc_mandatory_minimums_always_enforced():
-    """§9.2 CTB bundle >= 100 mm (> 20 msa) and §8.1 granular >= 150 mm survive ignore_minimum_thickness."""
+    """IRC thickness rules survive ignore_minimum_thickness: §9.2 CTB bundle >= 100 mm
+    (> 20 msa), §8.2.1 CTB >= 100 mm, §7.2.2 GSB >= 100 mm, §8.1 CRL >= 100 mm."""
     p = OptimizationProblem(
         traffic=TrafficInput(0, 3000, .05, 20, .75, 2.5), subgrade=SubgradeInput(8),
         layer_types=["BC", "DBM", "CRL", "CTB", "GSB"],
@@ -332,9 +334,25 @@ def test_irc_mandatory_minimums_always_enforced():
     )
     s = SmartPavementSearch(p)
     assert s._irc_mandatory_violation((40, 50, 100, 150, 200)).startswith("bituminous bundle")
-    assert s._irc_mandatory_violation((40, 60, 100, 150, 100)).startswith("unbound granular")
-    assert s._irc_mandatory_violation((40, 60, 100, 150, 150)) is None
+    assert "§7.2.2" in (s._irc_mandatory_violation((40, 60, 100, 150, 90)) or "")
+    assert "§8.2.1" in (s._irc_mandatory_violation((40, 60, 100, 90, 150)) or "")
+    assert "§8.1" in (s._irc_mandatory_violation((40, 60, 90, 150, 150)) or "")
+    # A 100 mm GSB filter / drainage layer is IRC-compliant (§7.2.2 (i)/(iii)).
+    assert s._irc_mandatory_violation((40, 60, 100, 150, 100)) is None
     assert s._enumerate_combinations() == []
+
+
+def test_unbound_base_minimum_is_150_but_gsb_is_100():
+    """§8.1: an unbound BASE (WMM/WBM) >= 150 mm; a GSB sub-base only >= 100 mm (§7.2.2)."""
+    p = OptimizationProblem(
+        traffic=TrafficInput(0, 1000, .05, 20, .75, 2.5), subgrade=SubgradeInput(8),
+        layer_types=["BC", "DBM", "WMM", "GSB"],
+        thickness_bounds={"BC": (40, 40), "DBM": (60, 60), "WMM": (100, 250), "GSB": (100, 200)},
+        ignore_minimum_thickness=True,
+    )
+    s = SmartPavementSearch(p)
+    assert "§8.1" in (s._irc_mandatory_violation((40, 60, 125, 150)) or "")
+    assert s._irc_mandatory_violation((40, 60, 150, 100)) is None
 
 
 def test_traffic_growth_to_opening_year():
@@ -408,9 +426,9 @@ def _browser_request(**over):
 def test_browser_bridge_matches_api_contract():
     bridge = _load_browser_bridge()
     ok = json.loads(bridge.run_optimize(json.dumps(_browser_request())))
-    assert ok["status"] == "success"
-    if ok["adequate_designs"]:
-        assert ok["adequate_designs"][0]["details"]["reliability"] == "R90"   # NH
+    assert ok["status"] == "success" and ok["adequate_designs"]
+    assert ok["adequate_designs"][0]["details"]["road_category"] == "nh"
+    # (R90 by category below 20 msa: test_audit_round2.test_bridge_and_api_road_category...)
     bad = json.loads(bridge.run_optimize(json.dumps(_browser_request(road_category="motorway"))))
     assert bad["status"] == "error" and "road_category" in bad["message"]
     layers = _browser_request()["layers"]
@@ -459,7 +477,7 @@ def test_backend_pdf_renders_ctb_criteria():
         adequate_designs=[],
     )
     assert pdf[:4] == b"%PDF"
-    assert np.isfinite(out["ctb_rf"])
+    # (PDF content: test_audit_round2.test_backend_pdf_*)
 
 
 @pytest.mark.parametrize("r", [0.0, 50.0, 100.0, 150.0, 300.0])

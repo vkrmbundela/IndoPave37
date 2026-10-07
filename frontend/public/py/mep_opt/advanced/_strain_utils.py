@@ -23,6 +23,8 @@ behaviour applies everywhere the advanced modules read bridge output.
 
 from typing import Dict, List, Optional, Tuple
 
+from mep_opt.solver.irc37 import bituminous_fatigue_strain
+
 
 # What the advanced modules (sensitivity, Monte Carlo, reserve) evaluate.
 # They work on a generic layer stack without layer types, so the CTB fatigue
@@ -116,7 +118,8 @@ def extract_design_strains(
             top of subgrade.
 
     Returns:
-        ``(eps_t, eps_v)`` in absolute-magnitude form.
+        ``(eps_t, eps_v)``: eps_t is the largest TENSILE horizontal strain
+        (0 when all compressive, IRC Annex III); eps_v is |eps_z|.
 
     Raises:
         ValueError: if ``results`` is empty or contains no usable
@@ -164,14 +167,11 @@ def extract_design_strains(
         )
 
     if bit_rows:
-        # Largest |strain| of the tangential AND radial components (eps_r can
-        # dominate at r=155 under dual tires). IRC:37-2018 Table 3.1 note (a):
-        # only absolute values enter the performance equations; note (b): the
-        # strain under thin layers / strong bases may be compressive.
-        eps_t = max(
-            max(abs(r["eps_t"]), abs(r.get("eps_r", 0.0)))
-            for r in bit_rows
-        )
+        # Largest TENSILE value of the tangential and radial components (eps_r
+        # can dominate at r=155 under dual tires). IRC:37-2018 Annex III: when
+        # every component is compressive, fatigue need not be checked, so the
+        # equation strain is 0 (CDF_fatigue = 0) — same rule as the optimizer.
+        eps_t = bituminous_fatigue_strain(bit_rows)[0]
     else:
         # No bituminous bottom point provided — granular-only section.
         # Fatigue is not the governing criterion; report 0 so CDF_fatigue

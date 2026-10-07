@@ -604,6 +604,39 @@ def check_ctb_adequacy(expected_spectrum: List[AxleLoadGroup],
     }
 
 
+def bituminous_fatigue_strain(rows) -> Tuple[float, float, bool]:
+    """
+    Critical fatigue strain from the solver rows at the bottom of the bottom
+    bituminous layer (r = 0 and 155 mm under the dual set).
+
+    IRC:37-2018 Annex II: εt is the largest of the tangential and radial
+    strains at the two radial distances. Annex III shows which sign: the
+    catalogue tabulates the largest TENSILE value (e.g. Table III.2, 5 msa:
+    1.18E-04 with fatigue life 1096 msa, although the radial strain between
+    the duals is about -297 µε), and "the computed horizontal strain at the
+    bottom of the bituminous layer is 'compressive' and thus fatigue
+    performance need not be checked" when no component is tensile.
+
+    Returns (eps_for_equation, eps_reported, compressive):
+      eps_for_equation  largest tensile strain, or 0.0 when every component is
+                        compressive (Eq. 3.3/3.4 then gives no fatigue damage);
+      eps_reported      the same tensile value, or the largest compressive
+                        magnitude as a negative number;
+      compressive       True when no component is tensile.
+    """
+    comps: List[float] = []
+    for r in rows:
+        comps.append(float(r["eps_t"]))
+        if r.get("eps_r") is not None:
+            comps.append(float(r["eps_r"]))
+    if not comps:
+        return 0.0, 0.0, False
+    tensile = max(comps)
+    if tensile > 0.0:
+        return tensile, tensile, False
+    return 0.0, min(comps), True
+
+
 def check_design_adequacy(eps_t: float, eps_v: float,
                           cumulative_msa: float,
                           mix_modulus: float,
@@ -665,6 +698,31 @@ EFFECTIVE_MODULUS_POISSON = 0.35
 GRANULAR_OVER_CTSB_MODULUS = {"WMM": 350.0, "WBM": 350.0, "CRL": 350.0, "GSB": 300.0}
 # Geosynthetic reinforcement is defined for unbound granular layers only.
 GEOGRID_ELIGIBLE_TYPES = frozenset({"WMM", "WBM", "GSB"})
+_FIXED_MODULUS_SUPPORT_TYPES = frozenset({"CTB", "CTSB"})
+
+
+def geogrid_placement_error(layers) -> Optional[str]:
+    """
+    Check where geogrids sit, before any analysis. `layers` is the pavement
+    top to bottom (subgrade excluded) as (layer_type, geogrid, pinned_E)
+    tuples. The SP:59 MIF scales an Eq. 7.1 granular modulus, so a geogrid is
+    accepted only on an unbound granular layer (WMM/WBM/GSB), and not on an
+    auto-modulus layer resting on a CTB/CTSB, whose modulus is a fixed IRC
+    value (450 MPa crack-relief layer, 350/300 MPa base over CTSB).
+    Returns the message for the first invalid placement, or None.
+    """
+    rows = [(str(t).upper().strip(), g, e) for t, g, e in layers]
+    for i, (lt, g, e) in enumerate(rows):
+        if g in (None, "", "none"):
+            continue
+        if lt not in GEOGRID_ELIGIBLE_TYPES:
+            return (f"Geogrid reinforcement is only defined for unbound granular "
+                    f"layers {sorted(GEOGRID_ELIGIBLE_TYPES)} (got {lt})")
+        below = rows[i + 1][0] if i + 1 < len(rows) else None
+        if e is None and below in _FIXED_MODULUS_SUPPORT_TYPES:
+            return (f"Geogrid on {lt} directly above {below} is not supported: its "
+                    f"modulus is a fixed IRC value, not an Eq. 7.1 modulus the MIF scales.")
+    return None
 
 
 def effective_modulus(rows: List[dict]) -> float:
@@ -780,8 +838,20 @@ def build_layer_stack(subgrade: SubgradeInput,
         # II.3: 0.2*480^0.45*62 = 200 MPa). No modular-ratio cap is specified
         # in IRC:37-2018; the previous min(., 3.0*support) clip is removed.
         composite_mod = 0.2 * (h_total ** 0.45) * support_modulus
+        # Poisson's ratio of the combined layer: IRC §7.2.3 / §8.1 give 0.35
+        # for granular base and sub-base (the default of every entry); a
+        # user-entered value is honoured as the thickness-weighted mean.
+        def _nu_of(g):
+            n_ = _gran_get(g, 'nu')
+            if n_ is None:
+                l_type = _gran_get(g, 'layer_type') or _gran_get(g, 'material_type') or ''
+                n_ = (layer_props.get(l_type, {}) or {}).get('nu')
+            return 0.35 if n_ is None else float(n_)
+        composite_nu = sum(
+            _nu_of(g) * float(_gran_get(g, 'thickness') or 0.0) for g in granular_layers
+        ) / h_total
         gran_moduli.append(composite_mod)
-        gran_nu_values.append(0.35)
+        gran_nu_values.append(composite_nu)
         gran_thicknesses.append(h_total)
     else:
         # Per-layer bottom-up analysis (treated/mixed stacks, pinned moduli or
