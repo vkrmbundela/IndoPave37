@@ -87,7 +87,7 @@ export default function DesignCard({ d, index, colorOf, airVoids, bitumenVolume,
         {/* Section strip: thickness-proportional layer bands */}
         <div className="flex h-7 rounded-md overflow-hidden border border-[var(--hairline)]" aria-hidden="true">
           {structural.map((l, j) => (
-            <div key={j} className="h-full flex items-center justify-center text-[10.5px] font-bold text-[#fff] overflow-hidden border-r border-[var(--hairline-strong)] last:border-r-0"
+            <div key={j} className="fp-ink h-full flex items-center justify-center text-[10.5px] font-bold text-[#fff] overflow-hidden border-r border-[var(--hairline-strong)] last:border-r-0"
                  style={{ width: `${(Number(l.thickness) / total) * 100}%`, background: colorOf(l, j) }}
                  title={`${l.name} ${Number(l.thickness).toFixed(0)} mm`}>
               {Number(l.thickness) / total > 0.12 ? l.name : ''}
@@ -108,7 +108,7 @@ export default function DesignCard({ d, index, colorOf, airVoids, bitumenVolume,
             {layers.map((l, j) => (
               <tr key={j} className="border-t border-[var(--hairline)]">
                 <td className="py-1 text-[var(--text-main)] font-medium">
-                  <span className="inline-block w-2 h-2 rounded-sm mr-1.5 align-middle border border-[var(--hairline-strong)]" style={{ background: Number(l.thickness) > 0 ? colorOf(l, j) : '#7c6552' }} />
+                  <span className="fp-ink inline-block w-2 h-2 rounded-sm mr-1.5 align-middle border border-[var(--hairline-strong)]" style={{ background: Number(l.thickness) > 0 ? colorOf(l, j) : '#7c6552' }} />
                   {l.name}
                 </td>
                 <td className="py-1 text-right fp-num font-semibold text-[var(--text-bold)]">{Number(l.thickness) > 0 ? Number(l.thickness).toFixed(0) : '∞'}</td>
@@ -171,16 +171,19 @@ export default function DesignCard({ d, index, colorOf, airVoids, bitumenVolume,
       <dl className="m-0 flex flex-col gap-1 px-4 py-3 border-t border-[var(--hairline)] bg-[var(--tile-head)] text-[12.5px]">
         <div className="flex items-baseline justify-between gap-2">
           <dt className="flex items-center gap-1 text-[var(--text-muted)]"><Layers size={12} aria-hidden="true" />Basis</dt>
-          <dd className="m-0 fp-num text-right text-[var(--text-bold)] font-semibold truncate">
+          <dd className="m-0 fp-num text-right text-[var(--text-bold)] font-semibold">
             {det.msa != null ? det.msa.toFixed(1) : '—'} msa · {det.reliability || '—'}
-            {reserve != null && (
-              <span className={cn('ml-1.5 font-medium', `text-[var(--${ratioTone(govRatio)})]`)}
-                    title="Structural reserve on the governing criterion: 1 / max(CDF, strain ratio) − 1">
-                · {(reserve * 100).toFixed(0)}% reserve
-              </span>
-            )}
           </dd>
         </div>
+        {reserve != null && (
+          <div className="flex items-baseline justify-between gap-2"
+               title="Structural reserve on the governing criterion: 1 / max(CDF, strain ratio) − 1">
+            <dt className="text-[var(--text-muted)]">Reserve</dt>
+            <dd className={cn('m-0 fp-num font-semibold', `text-[var(--${ratioTone(govRatio)})]`)}>
+              {govRatio < 0.1 ? 'far within the limits' : `${(reserve * 100).toFixed(0)}%`}
+            </dd>
+          </div>
+        )}
         <div className="flex items-baseline justify-between gap-2" title="Materials only, per km of a 3.5 m lane">
           <dt className="text-[var(--text-muted)]">Cost</dt>
           <dd className="m-0 fp-num text-[var(--text-bold)] font-semibold">{d.cost != null ? formatRupees(d.cost) : <span className="font-normal text-[var(--text-muted)]">enable the Cost objective</span>}</dd>

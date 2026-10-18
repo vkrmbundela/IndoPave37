@@ -4,8 +4,9 @@
 // side of each interface (the offset of the IRC critical points), and four
 // depths into the subgrade. Radii: r = 0 and, for a dual wheel, s/2 (the two
 // positions IRC Annex II examines). Per depth the profile keeps
-//   eh = max over radii of max(εt, εr)   horizontal, tension positive — the
-//        quantity the fatigue criterion takes at the bituminous bottom;
+//   eh = the largest tensile εt / εr over the radii, or — where every
+//        component is compressive — the largest compressive one (negative):
+//        the engine's reported fatigue strain (irc37.bituminous_fatigue_strain);
 //   ev = max over radii of (−εz)          vertical, compression positive — the
 //        rutting strain at the top of the subgrade.
 
@@ -59,15 +60,18 @@ export function buildProfileRequest(src) {
 export function reduceProfile(results, depths, radii) {
   const out = [];
   depths.forEach((z, i) => {
-    let eh = -Infinity;
+    const comps = [];
     let ev = -Infinity;
     radii.forEach((_, j) => {
       const r = results?.[i * radii.length + j];
       if (!r) return;
-      eh = Math.max(eh, Number(r.eps_t), Number(r.eps_r));
+      comps.push(Number(r.eps_t), Number(r.eps_r));
       ev = Math.max(ev, -Number(r.eps_z));
     });
-    if (Number.isFinite(eh) && Number.isFinite(ev)) out.push({ z, eh, ev });
+    const finite = comps.filter(Number.isFinite);
+    if (!finite.length || !Number.isFinite(ev)) return;
+    const tensile = Math.max(...finite);
+    out.push({ z, eh: tensile > 0 ? tensile : Math.min(...finite), ev });
   });
   return out;
 }

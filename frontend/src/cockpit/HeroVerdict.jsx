@@ -37,16 +37,17 @@ function BasisBig({ basis }) {
 }
 
 export default function HeroVerdict({ state, basis, verdict, onEvaluate, onOptimize, busyText, className }) {
+  const chips = (state === 'design' && verdict?.chips) || basis;
   const head = (
     <div className="fp-tile-head">
       <h2 className="fp-tile-title" id="tile-hero-title">
         {state === 'design' ? 'Selected design' : state === 'evaluate' ? 'Trial section' : 'IRC verdict'}
       </h2>
       <div className="flex flex-wrap items-center gap-1.5">
-        <Chip tone="info" title="Cumulative design traffic, IRC:37-2018 Eq. 4.5/4.6"><span className="fp-num">{basis.msa.toFixed(1)}</span>&nbsp;msa</Chip>
-        <Chip tone="muted" title="Reliability per IRC:37-2018 §3.7">R{basis.reliability}</Chip>
-        {basis.longLife && <Chip tone="ok" title="Long-life checks on (IRC:37-2018 §10)">Long-life</Chip>}
-        {verdict?.stale && <Chip tone="warn" title="An input changed after this evaluation — run Evaluate again">Inputs changed</Chip>}
+        <Chip tone="info" title={chips === basis ? 'Cumulative design traffic, IRC:37-2018 Eq. 4.5/4.6' : 'Design traffic this design was optimized for'}><span className="fp-num">{Number(chips.msa).toFixed(1)}</span>&nbsp;msa</Chip>
+        <Chip tone="muted" title="Reliability per IRC:37-2018 §3.7">R{chips.reliability ?? chips.rel}</Chip>
+        {chips.longLife && <Chip tone="ok" title="Long-life checks on (IRC:37-2018 §10)">Long-life</Chip>}
+        {verdict?.stale && <Chip tone="warn" title={state === 'evaluate' ? 'An input changed after this evaluation — run Evaluate again' : 'An input changed after this optimization — run Optimize again'}>Inputs changed</Chip>}
       </div>
     </div>
   );
@@ -91,7 +92,8 @@ export default function HeroVerdict({ state, basis, verdict, onEvaluate, onOptim
       <div className="flex flex-col md:flex-row items-center md:items-stretch gap-6 md:gap-8">
         <div className="flex flex-col items-center justify-center gap-1 flex-none">
           <RingGauge ratio={v.governing?.ratio} size={184} stroke={16}
-            label={v.governing ? `Governs · ${v.governing.label}` : 'Governing ratio'}
+            label={v.governing ? <>Governs · {v.governing.label}</> : 'Governing ratio'}
+            ariaLabel={v.governing?.ariaLabel ? `Governs: ${v.governing.ariaLabel}` : v.governing && typeof v.governing.label === 'string' ? `Governs: ${v.governing.label}` : 'Governing ratio'}
             sub={v.governing?.ratio != null ? (v.governing.ratio > 1 ? `${((v.governing.ratio - 1) * 100).toFixed(0)}% over the limit`
               : v.governing.ratio < 0.1 ? 'far within the limit' : `${((1 / v.governing.ratio - 1) * 100).toFixed(0)}% structural reserve`) : undefined}
             title="Largest demand/capacity ratio of the applicable IRC criteria (CDF, or strain / long-life limit)" />
@@ -110,7 +112,7 @@ export default function HeroVerdict({ state, basis, verdict, onEvaluate, onOptim
           </div>
           <div className="flex flex-wrap gap-x-6 gap-y-3">
             {v.ratios.map((r) => (
-              <RingGauge key={r.key} ratio={r.ratio} size={78} stroke={8} label={r.label} sub={r.sub} title={r.title}
+              <RingGauge key={r.key} ratio={r.ratio} size={78} stroke={8} label={r.label} ariaLabel={r.ariaLabel} sub={r.sub} title={r.title}
                 display={r.display} className="w-[96px]" />
             ))}
           </div>

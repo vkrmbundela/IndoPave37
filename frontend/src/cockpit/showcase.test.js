@@ -42,13 +42,13 @@ describe('strain–depth profile', () => {
     expect(b.request.layers[b.request.layers.length - 1].h).toBe(0);
     expect(b.bands.map((x) => x.name)).toEqual(['BC', 'DBM', 'GSB', 'Subgrade']);
   });
-  it('keeps the larger tensile horizontal and compressive vertical strain over the radii', () => {
+  it('keeps the largest tensile (else most compressive) horizontal and the largest compressive vertical strain', () => {
     const results = [
       { eps_t: -1e-4, eps_r: -2e-4, eps_z: 3e-5 }, { eps_t: -0.5e-4, eps_r: -1e-4, eps_z: 1e-5 },
       { eps_t: 1.2e-4, eps_r: 0.9e-4, eps_z: -2e-4 }, { eps_t: 1.0e-4, eps_r: 1.4e-4, eps_z: -2.4e-4 },
     ];
     expect(reduceProfile(results, [0, 150], [0, 155])).toEqual([
-      { z: 0, eh: -0.5e-4, ev: -1e-5 },
+      { z: 0, eh: -2e-4, ev: -1e-5 },
       { z: 150, eh: 1.4e-4, ev: 2.4e-4 },
     ]);
   });

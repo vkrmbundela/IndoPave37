@@ -1220,7 +1220,20 @@ export default function App() {
     });
   }, []);
 
+  // Below the rail breakpoint the verdict sits under the inputs: bring it into
+  // view when a run starts, so the run is seen to happen.
+  const revealVerdict = () => {
+    try {
+      if (window.matchMedia('(max-width: 1023.98px)').matches) {
+        // After the click has settled (a pointer click on the button would
+        // otherwise cancel a smooth scroll started inside its handler).
+        setTimeout(() => document.getElementById('tile-hero')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+      }
+    } catch { /* layout nicety only */ }
+  };
+
   const doSingleRun = async (overrides = null) => {
+    revealVerdict();
     setIsSolving(true); setError(null); setResults(null); setOptimizedDesigns(null); setOptimizationMode(false);
     try {
       // If overrides is a demo object (has .layers), use it; otherwise use current state.
@@ -1285,6 +1298,7 @@ export default function App() {
   };
 
   const doOptimize = async () => {
+    revealVerdict();
     setIsSolving(true); setError(null); setOptimizedDesigns(null); setResults(null); setOptimizationMode(true);
     setOptimizeWarnings(null);
     try {
@@ -1341,7 +1355,7 @@ export default function App() {
       });
       setOptimizedDesigns(data.adequate_designs || []);
       setSelectedDesign(0);
-      setOptContext({ wheel_load: load, tire_pressure: pressure, wheel_type: wheelType, wheel_spacing: wheelSpacing });
+      setOptContext({ wheel_load: load, tire_pressure: pressure, wheel_type: wheelType, wheel_spacing: wheelSpacing, signature: optSignature });
       setSp72Info(data.sp72 || null);
       setReinforcementInfo(data.reinforcement && data.reinforcement.length ? data.reinforcement : null);
       // Advisory warnings (reliability auto-escalation, CTB spectrum notes,
@@ -1459,6 +1473,10 @@ export default function App() {
   };
 
   const handleApplyDemo = (demo) => {
+    // A use case is a new project: earlier results do not belong to it.
+    setOptimizedDesigns(null);
+    setResults(null);
+    setError(null);
     const n = demo.numLayers ?? demo.layers.length;
     const wt = demo.wheelType ?? 'Dual';
     const ld = demo.load ?? 20000;
@@ -1556,6 +1574,13 @@ export default function App() {
   const currentSignature = inputSignature({
     layers, numLayers, points, load, pressure, wheelType, wheelSpacing, subgradeCbr, binderGrade, temperature,
   });
+  // Everything an Optimize result depends on beyond the section and load.
+  const optSignature = JSON.stringify({
+    s: currentSignature, msa: designMsa.toFixed(3), rel: reliabilityPercent, road: roadCategory,
+    ll: longLife, sami: hasSami, va: airVoids, vbe: bitumenVolume, cost: optimizeByCost, co2: optimizeByCo2,
+    rates: optimizeByCost || optimizeByCo2 ? sanitizeMaterialRates(materialRates) : null,
+    ctb: useCtbSpectrum ? ctbSpectrumText : null,
+  });
 
   // IRC verdict of the last Evaluate: strains at the critical points against
   // the allowable strains of the CURRENT traffic / reliability / mix.
@@ -1568,9 +1593,12 @@ export default function App() {
     const epsV = subRows.length ? Math.max(...subRows.map(r => Math.abs(Number(r.eps_z) || 0))) : null;
     const allow = allowableStrains({ msa: designMsa, reliability: reliabilityPercent, mrm: evalContext.mrm, airVoids, bitumenVolume });
     const compressive = bitRows.length > 0 && epsT === 0;
-    // Largest signed horizontal strain at the bituminous bottom (tension +):
-    // negative when every component is compressive (Annex III).
-    const epsTSigned = bitRows.length ? Math.max(...bitRows.map(r => Math.max(Number(r.eps_t), Number(r.eps_r)))) : null;
+    // Reported horizontal strain at the bituminous bottom, as the engine
+    // (irc37.bituminous_fatigue_strain): the largest tensile component, or —
+    // when every component is compressive (Annex III) — the largest
+    // compressive magnitude as a negative number.
+    const comps = bitRows.flatMap(r => [Number(r.eps_t), Number(r.eps_r)]).filter(Number.isFinite);
+    const epsTSigned = comps.length ? (Math.max(...comps) > 0 ? Math.max(...comps) : Math.min(...comps)) : null;
     evalVerdict = {
       roles,
       epsT, epsV, allow, compressive, epsTSigned,
@@ -1638,7 +1666,14 @@ export default function App() {
       };
     }
     if (!optimizationMode && results && evalVerdict) {
-      const rows = (evalContext.stack || []).slice(0, -1).map((l, i) => ({ name: l.name, h: l.h, index: i })).filter(l => l.h > 0);
+      // Sessions saved before the stack was recorded: rebuild the rows from
+      // the evaluated layer list (thickness: fixed, else minimum).
+      const rows = (evalContext.stack
+        ? evalContext.stack.slice(0, -1).map((l, i) => ({ name: l.name, h: l.h, index: i }))
+        : (evalContext.layers || []).slice(0, Math.max(0, (evalContext.numLayers || 1) - 1)).map((l, i) => ({
+            name: l.type || `Layer ${i + 1}`, h: Number(l.is_fixed ? l.fixed_h : l.min_h) || 0, index: i,
+          }))
+      ).filter(l => l.h > 0);
       const est = sectionCostCo2(rows.map(l => ({ type: l.name, h: l.h })), sanitizeMaterialRates(materialRates));
       return {
         kind: 'evaluate', rows, epsT: evalVerdict.compressive ? evalVerdict.epsTSigned : evalVerdict.epsT, epsV: evalVerdict.epsV, allow: evalVerdict.allow, rel: reliabilityPercent, msa: designMsa,
@@ -1670,12 +1705,12 @@ export default function App() {
         : { key: 'f', label: 'Fatigue', ratio: v.cdfF, sub: `${fmtUe(v.epsT)} / ${fmtUe(v.allow.epsT)} µε`, title: `Fatigue CDF (Eq. 3.${reliabilityPercent === 90 ? 4 : 3}) = (εt / allowable)^3.89` });
     }
     ratios.push({ key: 'r', label: 'Rutting', ratio: v.cdfR, sub: `${fmtUe(v.epsV)} / ${fmtUe(v.allow.epsV)} µε`, title: `Rutting CDF (Eq. 3.${reliabilityPercent === 90 ? 2 : 1}) = (εv / allowable)^4.5337` });
-    if (longLife && v.hasBituminous && !v.compressive) ratios.push({ key: 'lt', label: 'Long-life εt', ratio: v.llT, sub: `${fmtUe(v.epsT)} / 80 µε`, title: 'IRC:37-2018 §10 endurance limit for the bituminous tensile strain (35 °C).' });
-    if (longLife) ratios.push({ key: 'lv', label: 'Long-life εv', ratio: v.llV, sub: `${fmtUe(v.epsV)} / 200 µε`, title: 'IRC:37-2018 §10 limit for the subgrade vertical strain.' });
+    if (longLife && v.hasBituminous && !v.compressive) ratios.push({ key: 'lt', label: <>Long-life <span className="normal-case">εt</span></>, ariaLabel: 'Long-life tensile strain ratio', ratio: v.llT, sub: `${fmtUe(v.epsT)} / 80 µε`, title: 'IRC:37-2018 §10 endurance limit for the bituminous tensile strain (35 °C).' });
+    if (longLife) ratios.push({ key: 'lv', label: <>Long-life <span className="normal-case">εv</span></>, ariaLabel: 'Long-life vertical strain ratio', ratio: v.llV, sub: `${fmtUe(v.epsV)} / 200 µε`, title: 'IRC:37-2018 §10 limit for the subgrade vertical strain.' });
     const gov = ratios.filter(r => r.ratio != null).reduce((m, r) => (!m || r.ratio > m.ratio ? r : m), null);
     heroVerdict = {
       ratios, stale: v.stale,
-      governing: gov ? { label: gov.label, ratio: gov.ratio } : null,
+      governing: gov ? { label: gov.label, ariaLabel: gov.ariaLabel, ratio: gov.ratio } : null,
       adequate: !v.roles.ok || !gov ? null : gov.ratio <= 1,
       statusText: stackHasCtb && v.roles.ok && gov ? (gov.ratio <= 1 ? 'Passes fatigue and rutting' : null) : null,
       crust: shownCrust, bit: shownBit,
@@ -1694,11 +1729,14 @@ export default function App() {
     }
     ratios.push({ key: 'r', label: 'Rutting', ratio: det.CDF_rutting, sub: `${fmtUe(det.eps_v)} / ${fmtUe(shown.allow.epsV)} µε`, title: `Rutting CDF (Eq. 3.${shown.rel === 90 ? 2 : 1})` });
     if (det.CDF_ctb != null) ratios.push({ key: 'c', label: 'CTB fatigue', ratio: det.CDF_ctb, sub: det.ctb_details?.CDF_ctb != null ? 'Eq. 3.5 + 3.6' : 'Eq. 3.5', title: 'Governing CTB fatigue damage: Eq. 3.5 and, with an axle spectrum, Eq. 3.6.' });
-    if (ll && shown.hasBit && !shown.compressive) ratios.push({ key: 'lt', label: 'Long-life εt', ratio: ll.ratio_t, sub: `${fmtUe(det.eps_t)} / 80 µε`, title: 'IRC:37-2018 §10 endurance limit (35 °C).' });
-    if (ll) ratios.push({ key: 'lv', label: 'Long-life εv', ratio: ll.ratio_v, sub: `${fmtUe(det.eps_v)} / 200 µε`, title: 'IRC:37-2018 §10 subgrade strain limit.' });
+    if (ll && shown.hasBit && !shown.compressive) ratios.push({ key: 'lt', label: <>Long-life <span className="normal-case">εt</span></>, ariaLabel: 'Long-life tensile strain ratio', ratio: ll.ratio_t, sub: `${fmtUe(det.eps_t)} / 80 µε`, title: 'IRC:37-2018 §10 endurance limit (35 °C).' });
+    if (ll) ratios.push({ key: 'lv', label: <>Long-life <span className="normal-case">εv</span></>, ariaLabel: 'Long-life vertical strain ratio', ratio: ll.ratio_v, sub: `${fmtUe(det.eps_v)} / 200 µε`, title: 'IRC:37-2018 §10 subgrade strain limit.' });
     const govR = Math.max(det.CDF_fatigue || 0, det.CDF_rutting || 0, det.CDF_ctb || 0, ll?.ratio || 0);
     heroVerdict = {
       ratios, adequate: true,
+      // The run's own basis (inputs may have changed since).
+      stale: !!optContext?.signature && optContext.signature !== optSignature,
+      chips: { msa: det.msa ?? designMsa, rel: shown.rel, longLife: !!ll },
       governing: { label: MODE[det.governing_mode] || 'governing', ratio: govR },
       title: `#${selIdx + 1} · ${(det.strategy || 'Design').replace(/\s*\+\s*Premium$/, ' = Premium')}`,
       titleColor: archetypeTone(det.strategy).color,
@@ -1709,7 +1747,10 @@ export default function App() {
   } else if (heroState === 'none') {
     // "Best evaluated design has max CDF = 1.23 (governed by …)" (smart_search).
     const m = (optimizeWarnings || []).join(' ').match(/max CDF (>=|=) ([0-9]+(?:\.[0-9]+)?)/);
-    heroVerdict = { closest: m ? Number(m[2]) : null, closestLower: m ? m[1] === '>=' : false };
+    heroVerdict = {
+      closest: m ? Number(m[2]) : null, closestLower: m ? m[1] === '>=' : false,
+      stale: !!optContext?.signature && optContext.signature !== optSignature,
+    };
   }
 
   // Cumulative design traffic over the design period (sparkline), Eq. 4.5/4.6.
@@ -2066,7 +2107,8 @@ export default function App() {
       <div className="fp-shell flex-1">
 
         {/* ═══ INPUT RAIL ═══ */}
-        <aside className="fp-rail" aria-label="Design inputs">
+        <aside className="fp-rail" aria-labelledby="rail-title">
+          <h2 id="rail-title" className="sr-only">Design inputs</h2>
           <div className="fp-rail-scroll">
 
             {/* ① Pavement layers */}
@@ -2594,8 +2636,11 @@ export default function App() {
                     <Leaf size={13} className="text-[var(--ok)]" aria-hidden="true" />{(shown.co2 / 1000).toFixed(1)}<span className="text-[12px] font-medium text-[var(--text-muted)]">t CO₂</span>
                   </span>
                 </div>
-                <span className="fp-kpi-sub whitespace-normal">Materials · 3.5 m lane{shown.costEstimated ? ' · estimated here from the unit rates' : ' · from the optimizer'}</span>
-                <div className="flex h-3 rounded-full overflow-hidden bg-[var(--track)] mt-1" role="img"
+                <span className="fp-kpi-sub whitespace-normal">Materials · 3.5 m lane · {
+                  shown.costEstimated && shown.co2Estimated ? 'estimated here from the unit rates'
+                  : !shown.costEstimated && !shown.co2Estimated ? 'from the optimizer'
+                  : shown.costEstimated ? 'CO₂ from the optimizer, cost estimated here' : 'cost from the optimizer, CO₂ estimated here'}</span>
+                <div className="flex h-3 rounded-full overflow-hidden ring-1 ring-[var(--hairline)] mt-1" role="img"
                      aria-label={`Cost share: ${costParts.map(p => `${p.name} ${shown.cost ? Math.round((p.c / shown.cost) * 100) : 0}%`).join(', ')}`}>
                   {costParts.map((p) => (
                     <span key={p.k} className="h-full fp-grow fp-ink" title={`${p.name}: ${formatRupees(p.c)}`}
@@ -2644,7 +2689,7 @@ export default function App() {
                       <tr key={i} className={cn('border-t border-[var(--hairline)] transition-colors', hoverLayer === i && 'bg-[var(--accent-soft)]')}
                           onMouseEnter={() => setHoverLayer(i)} onMouseLeave={() => setHoverLayer(null)}>
                         <td className="py-1 font-sans font-semibold text-[var(--text-main)]">
-                          <span className="inline-block w-2.5 h-2.5 rounded-sm mr-1.5 align-[-1px] border border-[var(--hairline-strong)]" style={{ background: getLayerColor(l, i, sub) }} aria-hidden="true" />
+                          <span className="fp-ink inline-block w-2.5 h-2.5 rounded-sm mr-1.5 align-[-1px] border border-[var(--hairline-strong)]" style={{ background: getLayerColor(l, i, sub) }} aria-hidden="true" />
                           {sub ? 'Subgrade' : (layerType(l) || `Layer ${i + 1}`)}
                         </td>
                         <td className="py-1 text-right text-[var(--text-bold)]">{sub ? '∞' : l.is_fixed ? nominalH(l).toFixed(0) : `${Number(l.min_h) || 0}–${Number(l.max_h) || 0}`}</td>
@@ -2790,7 +2835,7 @@ export default function App() {
                     );
                   })()}
                   <button type="button" onClick={() => setShowPointTable(v => !v)} aria-expanded={showPointTable}
-                    className="self-start inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--accent)] hover:underline">
+                    className="self-start inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--accent-text)] hover:underline">
                     <ChevronRight size={15} className={cn('transition-transform', showPointTable && 'rotate-90')} aria-hidden="true" />
                     {showPointTable ? 'Hide' : 'Show'} stresses, deflection and strains at every point
                   </button>
@@ -2802,7 +2847,7 @@ export default function App() {
                         <th colSpan={3} className="py-1.5 px-3 border-b border-[var(--hairline)]">Location</th>
                         <th colSpan={4} className="py-1.5 px-3 border-b border-[var(--hairline)]">Stress state (MPa)</th>
                         <th className="py-1.5 px-3 border-b border-[var(--hairline)]">Deflection</th>
-                        <th colSpan={3} className="py-1.5 px-3 border-b border-[var(--hairline)] text-[var(--accent)]">Strains (failure checks)</th>
+                        <th colSpan={3} className="py-1.5 px-3 border-b border-[var(--hairline)] text-[var(--accent-text)]">Strains (failure checks)</th>
                       </tr>
                       <tr>
                         <th className="py-1.5 px-3 border-b border-[var(--hairline)]">Role</th>
@@ -2817,11 +2862,11 @@ export default function App() {
                         >τ<sub>rz</sub><span className="align-super text-[9px] ml-0.5">&#9432;</span></th>
                         <th className="py-1.5 px-3 border-b border-[var(--hairline)]">δ<sub>z</sub> (mm)</th>
                         <th
-                          className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent)] cursor-help"
+                          className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent-text)] cursor-help"
                           title="ε_r — radial horizontal strain (tension positive). The IRC:37 fatigue criterion uses the largest TENSILE horizontal strain, max of the signed ε_t, ε_r at the bottom of the bituminous layer; under dual wheels at R = 155 mm, ε_r can govern over ε_t. If both are compressive, fatigue is not checked (IRC:37-2018 Annex III)."
                         >ε<sub>r</sub><span className="align-super text-[9px] ml-0.5">&#9432;</span></th>
                         <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--info)] sticky right-24 z-20 bg-[var(--tile-head)]">ε<sub>z</sub></th>
-                        <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent)] sticky right-0 z-20 bg-[var(--tile-head)]">ε<sub>t</sub></th>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent-text)] sticky right-0 z-20 bg-[var(--tile-head)]">ε<sub>t</sub></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2839,7 +2884,7 @@ export default function App() {
                             <td className="py-1 px-3">{formatSci(r.disp_z)}</td>
                             <td className="py-1 px-3 border-l border-[var(--hairline)] text-[var(--text-bold)]">{formatSci(r.eps_r)}</td>
                             <td className="py-1 px-3 font-semibold text-[var(--info)] border-l border-[var(--hairline)] sticky right-24 z-10 bg-[var(--surface-panel)]">{formatSci(r.eps_z)}</td>
-                            <td className="py-1 px-3 font-semibold text-[var(--accent)] border-l border-[var(--hairline)] sticky right-0 z-10 bg-[var(--surface-panel)]">{formatSci(r.eps_t)}</td>
+                            <td className="py-1 px-3 font-semibold text-[var(--accent-text)] border-l border-[var(--hairline)] sticky right-0 z-10 bg-[var(--surface-panel)]">{formatSci(r.eps_t)}</td>
                           </tr>
                         );
                       })}

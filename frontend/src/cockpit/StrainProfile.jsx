@@ -40,8 +40,10 @@ export default function StrainProfile({ profile, bands, colorOf, allow, longLife
   const data = profile?.data;
 
   const H = height;
-  const gutter = W < 420 ? 64 : 84;
-  const gap = 18;
+  // Narrow tiles (phones): shorter panel titles and layer labels.
+  const narrow = W > 0 && W < 520;
+  const gutter = narrow ? 58 : 84;
+  const gap = narrow ? 12 : 18;
   const top = 24;
   const bottomPad = 26;
   const pw = Math.max(60, (W - gutter - gap - 8) / 2);
@@ -95,18 +97,18 @@ export default function StrainProfile({ profile, bands, colorOf, allow, longLife
               <line x1={gutter - 6} x2={x0b + pw} y1={y1} y2={y1} stroke="var(--hairline-strong)" strokeWidth={1} />
               <rect x={6} y={y1 + 1} width={4} height={Math.max(0, y2 - y1 - 2)} rx={2} fill={colorOf(b, k)} className="fp-ink" />
               {y2 - y1 >= 11 && (
-                <text x={15} y={(y1 + y2) / 2 + 4} fontSize={y2 - y1 >= 15 ? 11.5 : 10.5} fill="var(--text-main)" className="fp-num" fontWeight={600}>
-                  {b.name}
-                  {!b.subgrade && <tspan fill="var(--text-muted)" fontWeight={400}>{` ${Math.round(b.bottom - b.top)}`}</tspan>}
+                <text x={15} y={(y1 + y2) / 2 + 4} fontSize={narrow ? 10.5 : y2 - y1 >= 15 ? 11.5 : 10.5} fill="var(--text-main)" className="fp-num" fontWeight={600}>
+                  {narrow && b.subgrade ? 'SG' : b.name}
+                  {!b.subgrade && !narrow && <tspan fill="var(--text-muted)" fontWeight={400}>{` ${Math.round(b.bottom - b.top)}`}</tspan>}
                 </text>
               )}
             </g>
           );
         })}
         {/* Panel frames, titles, axes */}
-        {[[x0a, 'Horizontal εh', 'tension +', hLo, hMax], [x0b, 'Vertical εv', 'compression +', vLo, vMax]].map(([x0, t, s, lo, hi]) => (
+        {[[x0a, narrow ? 'εh' : 'Horizontal εh', narrow ? 'tension +' : 'µε · tension +', hLo, hMax], [x0b, narrow ? 'εv' : 'Vertical εv', narrow ? 'compr. +' : 'µε · compression +', vLo, vMax]].map(([x0, t, s, lo, hi]) => (
           <g key={t}>
-            <text x={x0} y={14} fontSize={11.5} fontWeight={700} fill="var(--text-bold)">{t}<tspan fontWeight={400} fill="var(--text-muted)">{`  µε · ${s}`}</tspan></text>
+            <text x={x0} y={14} fontSize={11.5} fontWeight={700} fill="var(--text-bold)">{t}<tspan fontWeight={400} fill="var(--text-muted)">{`  ${s}`}</tspan></text>
             <rect x={x0} y={top} width={pw} height={H - top - bottomPad} fill="none" stroke="var(--hairline)" />
             {ticks(lo, hi).map((v, i) => {
               const xx = x0 + ((v - lo) / (hi - lo)) * pw;
@@ -124,7 +126,7 @@ export default function StrainProfile({ profile, bands, colorOf, allow, longLife
         {aT != null && bitBottom && (
           <g>
             <line x1={xa(aT)} x2={xa(aT)} y1={top} y2={y(bitBottom)} stroke="var(--accent)" strokeWidth={1.5} strokeDasharray="5 4" />
-            <text x={xa(aT) - 4} y={top + 12} fontSize={10.5} textAnchor="end" fill="var(--accent)" className="fp-num">allow {fmt(aT)}</text>
+            <text x={xa(aT) - 4} y={top + 12} fontSize={10.5} textAnchor="end" fill="var(--accent-text)" className="fp-num">allow {fmt(aT)}</text>
           </g>
         )}
         {aV != null && subTop != null && (
@@ -145,7 +147,7 @@ export default function StrainProfile({ profile, bands, colorOf, allow, longLife
         {iT != null && (
           <g>
             <circle cx={xa(ehs[iT])} cy={y(data[iT].z)} r={4.5} fill="var(--surface-panel)" stroke="var(--accent)" strokeWidth={2} />
-            <text x={xa(ehs[iT]) + 8} y={y(data[iT].z) - 6} fontSize={11.5} fontWeight={700} fill="var(--accent)" className="fp-num">{fmt(ehs[iT])}</text>
+            <text x={xa(ehs[iT]) + 8} y={y(data[iT].z) - 6} fontSize={11.5} fontWeight={700} fill="var(--accent-text)" className="fp-num">{fmt(ehs[iT])}</text>
           </g>
         )}
         {iV != null && (

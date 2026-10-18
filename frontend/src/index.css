@@ -34,7 +34,9 @@
   /* Text colors */
   --text-main: #334155;          /* slate-700 */
   --text-bold: #0f172a;          /* slate-900 */
-  --text-muted: #64748b;         /* slate-500 */
+  --text-muted: #5b6b80;         /* >= 4.8:1 on every light surface */
+  /* Accent as text (links, pressed buttons, section numbers): >= 4.5:1. */
+  --accent-text: #c2410c;
 
   /* Bento tiles */
   --radius-tile: 18px;
@@ -245,6 +247,7 @@
   --text-main: #cbd5e1;          /* slate-300 */
   --text-bold: #f8fafc;          /* slate-50 */
   --text-muted: #94a3b8;         /* slate-400 */
+  --accent-text: #fb923c;
 
   /* Visualizer overrides */
   --vis-bg: #0f172a;
@@ -538,7 +541,7 @@ button, select, input, a, [role="button"] {
 .fp-tbtn:hover:not(:disabled) { border-color: var(--hairline-strong); background: var(--surface-sunken); color: var(--text-bold); }
 .fp-tbtn:active:not(:disabled) { transform: translateY(1px); }
 .fp-tbtn:disabled { opacity: .45; cursor: not-allowed; }
-.fp-tbtn[aria-pressed="true"] { border-color: color-mix(in oklab, var(--accent) 45%, transparent); color: var(--accent); background: var(--accent-soft); }
+.fp-tbtn[aria-pressed="true"] { border-color: color-mix(in oklab, var(--accent) 45%, transparent); color: var(--accent-text); background: var(--accent-soft); }
 
 /* Field row: label left, control right. */
 .fp-field { display: grid; grid-template-columns: 104px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 34px; }
@@ -577,7 +580,7 @@ button, select, input, a, [role="button"] {
 .fp-sec-num {
   flex: none; width: 22px; height: 22px; border-radius: 999px;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11.5px; font-weight: 700; color: var(--accent); background: var(--accent-soft);
+  font-size: 11.5px; font-weight: 700; color: var(--accent-text); background: var(--accent-soft);
 }
 .fp-sec-title { font-size: 13.5px; font-weight: 600; color: var(--text-bold); }
 .fp-sec-sum { font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -612,7 +615,7 @@ button, select, input, a, [role="button"] {
   font-size: 12px; font-weight: 700; border: 1px solid; cursor: pointer;
 }
 .fp-mode-fixed { color: var(--text-main); background: var(--surface-sunken); border-color: var(--hairline-strong); }
-.fp-mode-opt { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in oklab, var(--accent) 40%, transparent); }
+.fp-mode-opt { color: var(--accent-text); background: var(--accent-soft); border-color: color-mix(in oklab, var(--accent) 40%, transparent); }
 .fp-icon-btn {
   flex: none; width: 30px; height: 30px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center;
   color: var(--text-muted); border: 1px solid transparent; background: transparent; cursor: pointer;

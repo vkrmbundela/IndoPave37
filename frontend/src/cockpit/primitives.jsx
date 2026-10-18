@@ -166,7 +166,7 @@ const TONE_STROKE = { ok: 'var(--ok)', warn: 'var(--warn)', fail: 'var(--fail)',
 
 /* Ring gauge for a demand/capacity ratio. The arc fills to min(ratio, 1);
    above 1 the ring is full and turns red. Centre: the ratio in per cent. */
-export function RingGauge({ ratio, size = 96, stroke = 10, label, sub, display, title, className }) {
+export function RingGauge({ ratio, size = 96, stroke = 10, label, sub, display, title, className, ariaLabel }) {
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const has = ratio != null && Number.isFinite(Number(ratio));
@@ -177,7 +177,7 @@ export function RingGauge({ ratio, size = 96, stroke = 10, label, sub, display, 
     <div className={cn('flex flex-col items-center gap-1.5 min-w-0', className)} title={title}>
       <div className="relative" style={{ width: size, height: size }}>
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img"
-             aria-label={`${typeof label === 'string' ? label : 'Utilization'} ${text}`}>
+             aria-label={`${ariaLabel || (typeof label === 'string' ? label : 'Utilization')} ${text}`}>
           <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--track)" strokeWidth={stroke} />
           {has && (
             <circle
@@ -215,15 +215,17 @@ export function RailSection({ id, num, title, summary, defaultOpen = false, chil
   });
   return (
     <section className="fp-sec" aria-labelledby={`sec-${id}`}>
-      <button type="button" className="fp-sec-head" aria-expanded={open} aria-controls={`secb-${id}`} onClick={toggle}>
-        <span className="fp-sec-num" aria-hidden="true">{num}</span>
-        <span className="min-w-0 flex-1 flex flex-col">
-          <span className="fp-sec-title" id={`sec-${id}`}>{title}</span>
-          {!open && summary && <span className="fp-sec-sum">{summary}</span>}
-        </span>
-        <ChevronDown size={16} aria-hidden="true"
-          className={cn('flex-none text-[var(--text-muted)] transition-transform', open && 'rotate-180')} />
-      </button>
+      <h3 className="m-0">
+        <button type="button" className="fp-sec-head" aria-expanded={open} aria-controls={open ? `secb-${id}` : undefined} onClick={toggle}>
+          <span className="fp-sec-num" aria-hidden="true">{num}</span>
+          <span className="min-w-0 flex-1 flex flex-col">
+            <span className="fp-sec-title" id={`sec-${id}`}>{title}</span>
+            {!open && summary && <span className="fp-sec-sum">{summary}</span>}
+          </span>
+          <ChevronDown size={16} aria-hidden="true"
+            className={cn('flex-none text-[var(--text-muted)] transition-transform', open && 'rotate-180')} />
+        </button>
+      </h3>
       {open && (
         <div className="fp-sec-body fp-fade-up" id={`secb-${id}`}>
           {actions && <div className="flex flex-wrap items-center gap-2 -mt-1 mb-1">{actions}</div>}
@@ -240,7 +242,7 @@ export function More({ label = 'More', children }) {
   return (
     <div className="flex flex-col gap-1.5">
       <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
-        className="self-start inline-flex items-center gap-1 text-[12px] font-semibold text-[var(--accent)] hover:underline">
+        className="self-start inline-flex items-center gap-1 text-[12px] font-semibold text-[var(--accent-text)] hover:underline">
         <ChevronDown size={13} className={cn('transition-transform', open && 'rotate-180')} aria-hidden="true" />
         {open ? 'Fewer' : label}
       </button>
