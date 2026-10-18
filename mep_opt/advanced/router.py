@@ -7,7 +7,7 @@ conflict with existing /api/solve, /api/optimize, /api/report/pdf.
 
 import asyncio
 from fastapi import APIRouter, HTTPException, UploadFile, File
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import math
 from typing import Dict, List, Optional
 
@@ -48,6 +48,9 @@ def _reliability_field(default: int = DEFAULT_RELIABILITY):
 # ---------------------------------------------------------------------------
 
 class LayerData(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     modulus: float
     poisson: float
     thickness: float
@@ -91,6 +94,9 @@ class LayerData(BaseModel):
         return v
 
 class LoadData(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     load: float = 20000
     pressure: float = 0.56
     is_dual: bool = True
@@ -124,6 +130,9 @@ class LoadData(BaseModel):
         return self
 
 class EvalPointData(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     z: float
     r: float
 
@@ -146,6 +155,9 @@ class ReserveRequest(BaseModel):
     """Inputs for the structural-reserve gauge. Mirrors the cockpit's
     traffic & reliability assumptions so the gauge agrees with the design
     it is evaluating."""
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     eps_t: float
     eps_v: float
     mix_modulus: float
@@ -183,6 +195,9 @@ def _validate_point_roles(v, n_points: int):
 
 class SensitivityRequest(BaseModel):
     """Inputs for the layer-thickness sensitivity heatmap."""
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     layers: List[LayerData]
     load: LoadData
     eval_points: List[EvalPointData]
@@ -212,6 +227,9 @@ class SensitivityRequest(BaseModel):
 
 class StrainFieldRequest(BaseModel):
     """Inputs for the 3D strain-bulb field."""
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     layers: List[LayerData]
     load: LoadData
     r_steps: int = 12
@@ -219,6 +237,9 @@ class StrainFieldRequest(BaseModel):
     r_max: float = 500.0
 
 class CorridorConstraint(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     layer_type: str
     min_thickness: float
     max_thickness: float
@@ -262,6 +283,9 @@ class CorridorConstraint(BaseModel):
 
 class CorridorRequest(BaseModel):
     """Inputs for batch corridor optimization."""
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     layer_constraints: List[CorridorConstraint]
     growth_rate: float = 0.05
     design_life: int = 20
@@ -278,6 +302,9 @@ class CorridorRequest(BaseModel):
 
 class MonteCarloRequest(BaseModel):
     """Inputs for Monte Carlo construction-tolerance simulation."""
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     layers: List[LayerData]
     load: LoadData
     eval_points: List[EvalPointData]
@@ -420,8 +447,10 @@ async def corridor_upload(file: UploadFile = File(...), road_category: str = "ot
         #   support) per section — not a flat placeholder.
         from mep_opt.solver.materials import get_modulus
         default_constraints = [
-            {"layer_type": "BC",  "min_thickness": 40, "max_thickness": 50,  "fixed_thickness": 40,
-             "E": get_modulus("BC", temperature=35.0),  "nu": 0.35, "is_fixed": True},
+            # BC over its lift range: a fixed 40 mm failed the 50 mm traffic-tier
+            # minimum, so no section >= 50 msa could be designed.
+            {"layer_type": "BC",  "min_thickness": 40, "max_thickness": 50,
+             "E": get_modulus("BC", temperature=35.0),  "nu": 0.35, "is_fixed": False},
             {"layer_type": "DBM", "min_thickness": 50, "max_thickness": 150,
              "E": get_modulus("DBM", temperature=35.0), "nu": 0.35, "is_fixed": False},
             {"layer_type": "WMM", "min_thickness": 150, "max_thickness": 300,

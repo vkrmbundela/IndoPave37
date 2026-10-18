@@ -271,6 +271,19 @@ export async function computeGranularAutoE(layers, numLayers, subgradeCbr, solve
 // stale points after a thickness edit.
 // Returns { bit_bottom: [...], sub_top: [...], ok, bitBottomZ, subTopZ }.
 // ---------------------------------------------------------------------------
+// IRC:37-2018 Annex II/III bituminous fatigue strain: the largest TENSILE
+// horizontal strain (signed max of eps_t, eps_r) over the bottom-of-bituminous
+// rows; 0 when every component is compressive (fatigue is then not checked).
+// Same rule as mep_opt.solver.irc37.bituminous_fatigue_strain.
+export function tensileFatigueStrain(rows) {
+  if (!Array.isArray(rows) || !rows.length) return 0;
+  const tens = (r) => Math.max(
+    Number(r.eps_t ?? r.strain_t ?? 0),
+    Number(r.eps_r ?? r.eps_t ?? r.strain_t ?? 0),
+  );
+  return Math.max(0, ...rows.map(tens));
+}
+
 export function classifyPointRoles(layers, numLayers, points, tolMm = 5) {
   const empty = { bit_bottom: [], sub_top: [], ok: false, bitBottomZ: null, subTopZ: null };
   if (!Array.isArray(layers) || layers.length < 2 || !Array.isArray(points)) return empty;

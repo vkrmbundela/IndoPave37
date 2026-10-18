@@ -79,6 +79,8 @@ def _validate_request(data: dict) -> None:
         raise ValueError("air_voids (Va, %) must be between 1 and 12")
     if not (5.0 <= num("bitumen_volume", 11.5) <= 20.0):
         raise ValueError("bitumen_volume (Vbe, %) must be between 5 and 20")
+    if not (20.0 <= num("temperature", 35.0) <= 40.0):
+        raise ValueError("temperature must be between 20 and 40 °C (IRC:37-2018 Table 9.2)")
     if data.get("reliability", "90%") not in ("80%", "90%"):
         raise ValueError(
             "reliability must be '80%' or '90%' — IRC:37-2018 defines "
@@ -112,7 +114,7 @@ def _validate_request(data: dict) -> None:
             raise ValueError(f"Duplicate layer_type entries are not allowed: {t}")
         seen.add(t.upper())
         E = l.get("E")
-        if E is not None and not float(E) > 0:
+        if E is not None and not (math.isfinite(float(E)) and float(E) > 0):
             raise ValueError("Elastic modulus E must be positive (or null for auto)")
         nu = float(l.get("nu"))
         if not (0.0 <= nu < 0.5):
@@ -121,13 +123,25 @@ def _validate_request(data: dict) -> None:
             raise ValueError("min_thickness and max_thickness are required for every layer")
         lo = float(l.get("min_thickness")); hi = float(l.get("max_thickness"))
         fx = float(l.get("fixed_thickness", 0.0))
-        if lo < 0 or hi < 0 or fx < 0:
+        if not all(math.isfinite(v) for v in (lo, hi, fx)) or lo < 0 or hi < 0 or fx < 0:
             raise ValueError("Thickness must be non-negative (>= 0)")
+        if any(0 < v < 1.0 for v in (lo, hi, fx)):
+            raise ValueError("Layers thinner than 1 mm are not modelled (use 0 for the subgrade)")
+        if t.lower() == "subgrade" and l.get("geogrid") not in (None, "", "none"):
+            raise ValueError("Geogrid reinforcement is only defined for unbound granular layers "
+                             "['GSB', 'WBM', 'WMM'] (got Subgrade)")
         if not l.get("is_fixed") and lo > hi:
             raise ValueError(f"min_thickness ({lo}) cannot be greater than max_thickness ({hi})")
         g = l.get("geogrid")
         if g not in (None, "", "none") and g not in MIF_TABLE:
             raise ValueError(f"geogrid must be one of {sorted(MIF_TABLE)} or null (got {g!r})")
+    from mep_opt.solver.burmister import MAX_RADIAL_OFFSET
+    for p in data.get("points") or []:
+        z, r = float(p.get("z")), float(p.get("r"))
+        if not math.isfinite(z) or z < 0:
+            raise ValueError("depth z must be finite and >= 0 mm")
+        if not math.isfinite(r) or abs(r) > MAX_RADIAL_OFFSET:
+            raise ValueError(f"radial offset r must be finite and within {MAX_RADIAL_OFFSET:.0f} mm of the load")
     placement = geogrid_placement_error([
         (l.get("layer_type"), l.get("geogrid"), l.get("E")) for l in layers
         if str(l.get("layer_type") or "").strip().lower() != "subgrade"

@@ -344,22 +344,36 @@ def _gran_problem(cbr, props, geogrid=None, where="GSB", thk=(100, 150, 150)):
     )
 
 
-def test_geogrid_never_worse_than_conventional_section():
+def test_geogrid_section_is_irc_reinforced_and_no_benefit_is_flagged():
     """
-    CBR 15, DBM 100 / WMM 150 / GSB 150 with PET30 on the GSB (MIF ~1.16): the
-    separately estimated reinforced moduli are softer than the §7.2.3
-    composite, so the reinforced section gave HIGHER eps_t / eps_v. IRC:SP:59
-    §3.1.3 measures reinforcement against the conventional section.
+    The reinforced section is analysed as IRC:37-2018 §7.2.3 / §8.1 prescribe
+    (moduli estimated separately, MIF on top) — the same moduli the cockpit
+    Evaluate uses. With a weak geogrid (CBR 15, PET30 on the GSB, MIF ~1.16)
+    that section is softer than the §7.2.3 composite; IRC:SP:59 §3.1.3 measures
+    reinforcement against the conventional section, so every returned design
+    is compared with it and flagged "no benefit" with a warning.
     """
     props = {"DBM": {"E": 2000, "nu": .35}}
     conv = SmartPavementSearch(_gran_problem(15, props))._evaluate([100, 150, 150])
     reinf = SmartPavementSearch(_gran_problem(15, props, "PET30"))._evaluate([100, 150, 150])
-    assert reinf["eps_t"] <= conv["eps_t"] * (1 + 1e-12)
-    assert reinf["eps_v"] <= conv["eps_v"] * (1 + 1e-12)
-    assert reinf["geogrid_credit"].startswith("not taken")
-    strong = SmartPavementSearch(_gran_problem(4, props, "PET60", "WMM"))._evaluate([100, 150, 150])
-    weak = SmartPavementSearch(_gran_problem(4, props))._evaluate([100, 150, 150])
-    assert strong["geogrid_credit"] == "applied" and strong["eps_t"] < weak["eps_t"]
+    assert len(reinf["layers"]) == len(conv["layers"])
+    mods = {l["name"]: l["modulus"] for l in reinf["layers"]}
+    assert mods["WMM"] != mods["GSB"]                 # separately estimated, not composite
+    assert reinf["eps_v"] > conv["eps_v"]             # the IRC idealisation switch
+
+    def run(cbr, geogrid, where, thk):
+        p = _gran_problem(cbr, props, geogrid, where, thk=thk)
+        p.thickness_bounds["DBM"] = (100, 250)
+        return SmartPavementSearch(p).run()
+
+    weak = run(15, "PET30", "GSB", (100, 150, 150))
+    assert weak.is_feasible
+    assert weak.pareto_front[0].performance["geogrid_credit"] == "no benefit"
+    assert any("no structural benefit" in w and "SP:59" in w for w in weak.warnings)
+    strong = run(8, "PET60", "WMM", (100, 250, 250))
+    assert strong.is_feasible
+    assert strong.pareto_front[0].performance["geogrid_credit"] == "benefit"
+    assert not any("no structural benefit" in w for w in (strong.warnings or []))
 
 
 @pytest.mark.parametrize("types, props, msg", [

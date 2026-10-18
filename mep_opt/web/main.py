@@ -14,9 +14,11 @@ from typing import List, Dict, Any, Optional, Union
 import numpy as np
 from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Project Imports
 from mep_opt.solver.legacy_bridge import is_bridge_available, run_bridge_from_stack
@@ -31,6 +33,15 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI App
 app = FastAPI(title="IndoPave-37 API", version="3.4.2")
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError):
+    """422 with the usual detail list. The default handler echoes the offending
+    input, and a NaN / Infinity input cannot be rendered as JSON (it turned the
+    422 into a 500); non-finite numbers are reported as null instead."""
+    return JSONResponse(status_code=422,
+                        content={"detail": _to_native(jsonable_encoder(exc.errors()))})
 
 # Configure CORS. This is a stateless public API (no cookies/sessions/auth),
 # so credentials are not used. A wildcard origin combined with
@@ -112,6 +123,9 @@ if os.path.exists("frontend/dist"):
 # ---------------------------------------------------------------------------
 
 class LayerInput(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     E: float
     nu: float
     h: float  # 0 for infinite (half-space)
@@ -141,6 +155,9 @@ class LayerInput(BaseModel):
 
 
 class AnalysisPointInput(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     z: float
     r: float
 
@@ -162,6 +179,9 @@ class AnalysisPointInput(BaseModel):
 
 
 class SolveRequest(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     layers: List[LayerInput]
     wheel_load: float = 20000.0     # Load per wheel (N)
     tire_pressure: float = 0.56     # Contact pressure (MPa)
@@ -213,6 +233,9 @@ class SolveResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class LayerConstraint(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     layer_type: str  # BC, DBM, WMM, GSB, etc.
     min_thickness: float
     max_thickness: float
@@ -253,11 +276,13 @@ class LayerConstraint(BaseModel):
             raise ValueError("Poisson ratio nu must be in [0, 0.5)")
         return v
 
-    @field_validator("min_thickness", "max_thickness")
+    @field_validator("min_thickness", "max_thickness", "fixed_thickness")
     @classmethod
     def thickness_non_negative(cls, v):
         if v < 0:
             raise ValueError("Thickness must be non-negative (>= 0)")
+        if 0 < v < 1.0:
+            raise ValueError("Layers thinner than 1 mm are not modelled (use 0 for the subgrade)")
         return v
 
     @field_validator("fixed_thickness")
@@ -280,6 +305,9 @@ class LayerConstraint(BaseModel):
 
 class MaterialRateOverride(BaseModel):
     """Optional per-field override of a single material's unit rate."""
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     cost_per_cum: Optional[float] = None       # ₹/m³
     co2_per_cum: Optional[float] = None        # kg CO₂/m³
     density: Optional[float] = None            # kg/m³
@@ -315,6 +343,9 @@ class MaterialRateOverride(BaseModel):
 
 
 class AxleLoadGroupInput(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     axle_type: str          # "single" | "tandem" | "tridem"
     load_kn: float          # GROSS axle(-group) load, kN
     expected_repetitions: float
@@ -342,6 +373,9 @@ class AxleLoadGroupInput(BaseModel):
 
 
 class OptimizeRequest(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     # Commercial vehicles/day as per the last count: directional volume for a
     # divided carriageway, two-way volume otherwise (IRC:37-2018 §4.6.1).
     cvpd: float
@@ -404,6 +438,15 @@ class OptimizeRequest(BaseModel):
                     raise ValueError(f"material_rates[{k}] must be non-negative")
                 normalized[k] = val
         return normalized
+
+    @field_validator("temperature")
+    @classmethod
+    def temperature_range(cls, v):
+        # IRC:37-2018 Table 9.2 tabulates bituminous moduli for 20-40 °C;
+        # outside it the lookup would silently clamp.
+        if not (20.0 <= v <= 40.0):
+            raise ValueError("temperature must be between 20 and 40 °C (IRC:37-2018 Table 9.2)")
+        return v
 
     @field_validator("cvpd")
     @classmethod
@@ -561,6 +604,9 @@ class OptimizeRequest(BaseModel):
                 f"Duplicate layer_type entries are not allowed: {sorted(set(dups))}"
             )
         from mep_opt.solver.irc37 import geogrid_placement_error
+        if any(l.geogrid for l in v if str(l.layer_type).strip().lower() == "subgrade"):
+            raise ValueError("Geogrid reinforcement is only defined for unbound granular layers "
+                             "['GSB', 'WBM', 'WMM'] (got Subgrade)")
         msg = geogrid_placement_error([
             (l.layer_type, l.geogrid, l.E) for l in v
             if str(l.layer_type).strip().lower() != "subgrade"
@@ -645,7 +691,7 @@ async def solve_pavement(data: SolveRequest):
         for i, r in enumerate(raw_results):
             res_dict = {
                 "id": i,
-                "z": data.points[i].z,
+                "z": r.get("z", data.points[i].z),   # depth evaluated (< 0.5 mm -> 0)
                 "r": data.points[i].r,
                 "sigma_z": r.get("sigma_z", 0.0),
                 "sigma_r": r.get("sigma_r", 0.0),

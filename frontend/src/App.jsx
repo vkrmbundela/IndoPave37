@@ -512,7 +512,8 @@ const getLayerColor = (l, i, isSubgrade) => {
   const type = (l.type || l.name || '').toUpperCase();
   if (type.includes('BC')) return '#1e293b';
   if (type.includes('DBM')) return '#334155';
-  if (type.includes('BM') || type.includes('SMA') || type.includes('SDBC') || type.includes('PAVED')) return '#1c1917';
+  // Whole-token BM only: 'WBM' (unbound granular) must reach its own branch.
+  if (/\bBM\b/.test(type) || type.includes('SMA') || type.includes('SDBC') || type.includes('PAVED')) return '#1c1917';
   if (type.includes('WMM')) return '#475569';
   if (type.includes('WBM')) return '#5a6b7c';
   if (type.includes('GSB')) return '#78716c';
@@ -1876,8 +1877,14 @@ export default function App() {
                                     // but a pinned E is the UNREINFORCED modulus that
                                     // gets the MIF on top. Store E / MIF (same getMif
                                     // call and subgrade MRS as computeGranularAutoE)
-                                    // so the MIF is not applied twice.
-                                    if (layer.auto_E && !checked && layer.geogrid && layer.geogrid !== 'none') {
+                                    // so the MIF is not applied twice. Only when the
+                                    // shown E really is the engine's reinforced value:
+                                    // after a failed or still-pending computation it is
+                                    // not, and dividing would silently cancel the MIF.
+                                    const engine = engineGranularE.find(x => x.index === j);
+                                    const shownIsReinforced = !autoEError && engine && engine.auto
+                                      && Math.abs(Number(layer.E) - engine.E) <= 0.05;
+                                    if (layer.auto_E && !checked && layer.geogrid && layer.geogrid !== 'none' && shownIsReinforced) {
                                       const mif = getMif(subgradeModulusFromCBR(subgradeCbr), layer.geogrid);
                                       const curE = Number(layer.E);
                                       if (mif > 0 && Number.isFinite(curE) && curE > 0) {

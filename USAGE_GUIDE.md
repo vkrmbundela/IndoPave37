@@ -122,7 +122,7 @@ Switches the design engine to low-volume pavement rules.
 ### 🕸️ Geosynthetic Base Reinforcement (Geogrids)
 Integrate geogrid interlayers to reduce required base thickness.
 * Granular base/sub-base layers allow selection of biaxial or triaxial geogrids.
-* Applies a **Modulus Improvement Factor (MIF)** to the reinforced layer's Eq. 7.1 modulus (which rests on the effective modulus of the layers below, IRC:37-2018 §8.1), capped at **2.0** — the IRC:SP:59-2019 §3.1.3 design maximum for geogrids. SP:59 requires third-party-validated MIF for the actual product. A geogrid is accepted only on WMM/WBM/GSB, and not on an auto-modulus layer resting on a CTB/CTSB, whose modulus is a fixed IRC value. The optimizer also checks the conventional (unreinforced) section and keeps whichever is less critical, so a geogrid can never make a design thicker (SP:59 §3.1.3).
+* Applies a **Modulus Improvement Factor (MIF)** to the reinforced layer's Eq. 7.1 modulus (which rests on the effective modulus of the layers below, IRC:37-2018 §8.1), capped at **2.0** — the IRC:SP:59-2019 §3.1.3 design maximum for geogrids. SP:59 requires third-party-validated MIF for the actual product. A geogrid is accepted only on WMM/WBM/GSB, and not on an auto-modulus layer resting on a CTB/CTSB, whose modulus is a fixed IRC value. The reinforced section is analysed with separately estimated moduli, as IRC:37-2018 §7.2.3 / §8.1 prescribe. Each returned design is also compared with the conventional (unreinforced) section. When the geogrid does not lower the governing CDF, the design is flagged "no benefit" with a warning (SP:59 §3.1.3, steps 2 and 4).
 
 ### 🚒 Cement Treated Base (CTB) Axle Spectrum
 When designing with a Cement Treated Base:

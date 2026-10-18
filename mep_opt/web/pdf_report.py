@@ -418,8 +418,10 @@ def _design_basis(styles, traffic_params, subgrade_cbr, sol):
     if ru == 'R90':
         if cat in ('expressway', 'nh', 'sh', 'urban'):
             rel = f"90% ({cat.upper() if cat in ('nh', 'sh') else cat.title()}: any traffic)"
-        else:
+        elif msa >= 20:
             rel = "90% (≥ 20 MSA)"
+        else:
+            rel = "90% (as requested)"
     else:
         rel = "80% (other roads, < 20 MSA)"
     story.append(_section(styles, "Reliability &amp; Mix", "IRC:37-2018 §3.7, §3.6.2"))

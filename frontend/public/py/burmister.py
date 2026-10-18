@@ -47,7 +47,7 @@ from typing import List
 _NEAR_SURFACE_FACTOR = 0.75   # z_decay < 0.75*a -> refined treatment
 _DECAY_TARGET = 40.0          # integrate until m*z_decay >= 40 (e^-40 ~ 4e-18)
 _REFINED_PANEL = 2.0          # refined panel width = 2 / max(a, r)  [1/mm]
-SURFACE_Z_TOL = 0.5           # mm: shallower points are evaluated at z = 0
+SURFACE_Z_TOL = 0.5           # mm: shallower points are evaluated, and reported, at z = 0
 # The fixed IITPAVE intervals (GL4 panels up to 20/a wide) alias the J0/J1
 # oscillation once r is several contact radii; such far-field points use the
 # refined panels at every depth. All IRC design points (r <= 310 mm under the
@@ -57,7 +57,10 @@ _FAR_FIELD_FACTOR = 4.0
 # for extreme inputs (sub-millimetre top layers far from the load); the panels
 # are then widened uniformly instead of letting the cost grow without bound.
 _MAX_REFINED_PANELS = 50000
-_MAX_PANEL_WIDENING = 8       # beyond this the result would be unreliable: refuse
+# Beyond this widening the result would be unreliable: refuse. 10 keeps every
+# in-domain point (layers >= 1 mm, |r| <= MAX_RADIAL_OFFSET, and the second
+# wheel of a dual set at up to MAX_RADIAL_OFFSET + 2000 mm) accurate (< 0.5%).
+_MAX_PANEL_WIDENING = 10
 _KERNEL_CHUNK = 2048          # Hankel nodes per batched linear solve
 MIN_LAYER_THICKNESS = 1.0     # mm; thinner finite layers are not modelled (0 = omit)
 MAX_RADIAL_OFFSET = 20000.0   # mm; evaluation points farther from the load are refused
@@ -511,8 +514,16 @@ class BurmisterSolver:
         """Solve for all evaluation points."""
         _validate_points(eval_points)
         if self.load.is_dual:
-            return self._solve_dual(eval_points)
-        return [self._solve_single(p.z, p.r) for p in eval_points]
+            results = self._solve_dual(eval_points)
+        else:
+            results = [self._solve_single(p.z, p.r) for p in eval_points]
+        # Points shallower than SURFACE_Z_TOL are evaluated at the surface
+        # (a sub-millimetre depth is below the scale of the continuum model);
+        # report the depth actually evaluated rather than the one requested.
+        for res in results:
+            if 0.0 < res.z < SURFACE_Z_TOL:
+                res.z = 0.0
+        return results
 
     def _solve_dual(self, points: List[EvalPoint]) -> List[ResponseResult]:
         """

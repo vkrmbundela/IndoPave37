@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Gauge, AlertCircle, ShieldCheck, TrendingUp } from 'lucide-react';
 import useAdvancedApi from '../../hooks/useAdvancedApi';
-import { bottomBituminousModulus, classifyPointRoles, cumulativeMSA } from '../../../lib/irc';
+import { bottomBituminousModulus, classifyPointRoles, cumulativeMSA, tensileFatigueStrain } from '../../../lib/irc';
 
 function GaugeBar({ label, value, max, color, unit = 'MSA' }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
@@ -88,16 +88,11 @@ export default function ReserveMeter({ sharedState }) {
     }
     setRolesOk(roles.ok);
 
-    // IRC:37-2018 Annex III: the fatigue strain is the largest TENSILE
-    // horizontal strain (signed max of εt, εr); when every component is
-    // compressive "fatigue performance need not be checked" (sent as 0).
-    const tensT = (r) => Math.max(
-      Number(r.eps_t ?? r.strain_t ?? 0),
-      Number(r.eps_r ?? r.eps_t ?? r.strain_t ?? 0),
-    );
+    // IRC:37-2018 Annex III: the largest TENSILE horizontal strain; 0 when
+    // every component is compressive ("fatigue performance need not be checked").
     const absV = (r) => Math.abs(r.eps_z || r.strain_z || 0);
 
-    const maxEpsT = bitRows.length ? Math.max(0, ...bitRows.map(tensT)) : 0;
+    const maxEpsT = tensileFatigueStrain(bitRows);
     const maxEpsV = subRows.length ? Math.max(...subRows.map(absV)) : 0;
 
     if (maxEpsV < 1e-15 && maxEpsT < 1e-15) return;
@@ -129,7 +124,10 @@ export default function ReserveMeter({ sharedState }) {
       air_voids: sharedState.airVoids ?? 3.0,
       bitumen_volume: sharedState.bitumenVolume ?? 11.5,
     }).then(res => {
-      if (res && res.status === 'ok') setResult(res);
+      // All-compressive bituminous bottom: fatigue is not checked (Annex III);
+      // the backend's Nf then is only its JSON-safe stand-in for infinity.
+      const fatigueCompressive = bitRows.length > 0 && maxEpsT === 0;
+      if (res && res.status === 'ok') setResult({ ...res, fatigueCompressive });
     });
   }, [
     hasResults,
@@ -256,10 +254,18 @@ export default function ReserveMeter({ sharedState }) {
       <div className="grid grid-cols-2 gap-4 mb-5">
         <div className="bg-white rounded border border-gray-200 p-4">
           <p className="text-[10px] uppercase tracking-wider text-orange-500 font-bold mb-2">Fatigue Capacity</p>
-          <GaugeBar label="Nf" value={result.Nf_msa} max={maxCapacity} color="bg-orange-400" />
-          <p className="text-[10px] text-gray-400">
-            Allowable repetitions before fatigue cracking
-          </p>
+          {result.fatigueCompressive ? (
+            <p className="text-[11px] font-semibold text-slate-600">
+              Not checked — the horizontal strain at the bottom of the bituminous layer is compressive (IRC:37-2018 Annex III).
+            </p>
+          ) : (
+            <>
+              <GaugeBar label="Nf" value={result.Nf_msa} max={maxCapacity} color="bg-orange-400" />
+              <p className="text-[10px] text-gray-400">
+                Allowable repetitions before fatigue cracking
+              </p>
+            </>
+          )}
         </div>
         <div className="bg-white rounded border border-gray-200 p-4">
           <p className="text-[10px] uppercase tracking-wider text-blue-500 font-bold mb-2">Rutting Capacity</p>

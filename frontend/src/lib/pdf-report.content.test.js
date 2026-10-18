@@ -105,3 +105,25 @@ describe('pdf-report content', () => {
     expect(compliancePage).not.toContain('N_f (allowable reps)');
   });
 });
+
+describe('pdf-report content (verification round 3)', () => {
+  it('follows the engine level even where the Sec 3.7 fallback disagrees', () => {
+    // 'other' road at 6.4 msa: the fallback would give 80%; the engine said R90.
+    const doc = build(solution({ reliability: 'R90', road_category: 'other' }), { road_category: 'other' });
+    const page4 = pageText(doc, 4);
+    expect(page4).toContain('90% reliability');
+    expect(page4).toContain('0.5161');
+    expect(page4).not.toContain('1.6064');
+  });
+
+  it('uses the road category for the fallback on the compliance page too', () => {
+    const doc = build(solution({ reliability: undefined, road_category: undefined }), { road_category: 'nh' });
+    expect(pageText(doc, 4)).toContain('90% reliability');
+  });
+
+  it('numbers the performance equations as IRC:37-2018 does', () => {
+    const page4 = pageText(build(solution({ reliability: 'R80', road_category: 'other' }), { road_category: 'other' }), 4);
+    expect(page4).toMatch(/Subgrade Rutting.*Eq 3\.1\/3\.2/);
+    expect(page4).toMatch(/Bituminous Fatigue Cracking.*Eq 3\.3\/3\.4/);
+  });
+});

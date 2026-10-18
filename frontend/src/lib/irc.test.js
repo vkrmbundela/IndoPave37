@@ -8,7 +8,7 @@
 // Run: npm test
 
 import { describe, it, expect } from 'vitest';
-import { bottomBituminousModulus, classifyPointRoles, computeGranularAutoE } from './irc';
+import { bottomBituminousModulus, classifyPointRoles, computeGranularAutoE, tensileFatigueStrain } from './irc';
 
 // BC 40 / DBM 100 / WBM 200 / GSB 200 / subgrade (fixed thicknesses).
 const STACK = [
@@ -72,5 +72,17 @@ describe('computeGranularAutoE composite (IRC:37-2018 §7.2.3)', () => {
     const nu = (0.45 * 250 + 0.40 * 200) / 450;
     expect(out[0].nu).toBeCloseTo(nu, 12);
     expect(out[1].nu).toBeCloseTo(nu, 12);
+  });
+});
+
+describe('tensileFatigueStrain (IRC:37-2018 Annex III)', () => {
+  it('takes the largest TENSILE value, not the largest magnitude', () => {
+    // Table III.2-like rows: compressive radial strain between the duals.
+    const rows = [{ eps_t: 112e-6, eps_r: 117e-6 }, { eps_t: 59e-6, eps_r: -296e-6 }];
+    expect(tensileFatigueStrain(rows)).toBeCloseTo(117e-6, 12);
+  });
+  it('is 0 (fatigue not checked) when every component is compressive', () => {
+    expect(tensileFatigueStrain([{ eps_t: -6e-5, eps_r: -6.6e-5 }])).toBe(0);
+    expect(tensileFatigueStrain([])).toBe(0);
   });
 });

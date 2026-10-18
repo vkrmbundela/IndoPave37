@@ -134,11 +134,12 @@ class SmartPavementSearch:
         self._reliability = required_reliability(_msa, _cat, self.problem.reliability)
         # A geogrid in an all-unbound granular stack switches the analysis
         # from the §7.2.3 composite layer to separately estimated moduli
-        # (IRC:37-2018 §7.2.3 / §8.1 for reinforced layers), which for a small
-        # MIF can be softer than the conventional section. IRC:SP:59 §3.1.3
-        # measures reinforcement against the conventional IRC section (steps
-        # 2 and 4), so such designs are also checked as the conventional
-        # section and the reinforcement credit is never negative.
+        # (IRC:37-2018 §7.2.3 / §8.1 for reinforced layers; the reinforced
+        # section is what IRC:SP:59 §3.1.3 step 6 checks, and what the
+        # cockpit analyses). For a small MIF that section can be softer than
+        # the conventional one, so every returned design is compared with the
+        # conventional section (SP:59 steps 2 and 4) and flagged when the
+        # geogrid gives no benefit (see run()).
         _props = self.problem.layer_props or {}
         _gran = [lt for lt in self.problem.layer_types if lt not in BITUMINOUS_TYPES]
         self._geogrid_vs_conventional = (
@@ -394,22 +395,39 @@ class SmartPavementSearch:
         return solver_stack, cost_specs, input_bituminous, ctb_depth
 
     def _evaluate(self, thicknesses: List[float]) -> dict:
+        """Evaluate one thickness combination (the reinforced section when a
+        geogrid is present, IRC:37-2018 §7.2.3 / §8.1, IRC:SP:59 §3.1.3)."""
+        return self._evaluate_stack(thicknesses)
+
+    def _geogrid_benefit_check(self, archetypes, warnings: List[str]) -> None:
         """
-        Evaluate one thickness combination. A geogrid-reinforced all-unbound
-        stack is also evaluated as the conventional section; the less
-        critical of the two is kept (IRC:SP:59 §3.1.3: reinforcement is
-        credited relative to the conventional IRC section, never against it).
+        IRC:SP:59 §3.1.3 steps 2 and 4 measure a reinforced section against
+        the conventional IRC section. For every returned design of a
+        geogrid-reinforced all-unbound stack, evaluate the same thicknesses
+        without the geogrid (§7.2.3 composite) and record whether the
+        reinforcement lowers the governing CDF.
         """
-        res = self._evaluate_stack(thicknesses)
-        if getattr(self, "_geogrid_vs_conventional", False):
-            conv = self._evaluate_stack(thicknesses, conventional=True)
-            if self._governing_cdf(conv) < self._governing_cdf(res):
-                conv["geogrid_credit"] = (
-                    "not taken: the conventional section (IRC:37 §7.2.3 composite, "
-                    "no MIF) is less critical (IRC:SP:59 §3.1.3)")
-                return conv
-            res["geogrid_credit"] = "applied"
-        return res
+        for arch in archetypes:
+            perf = getattr(arch, "performance", None) or {}
+            th = perf.get("thicknesses")
+            if not th or not perf.get("overall_adequate"):
+                continue
+            try:
+                conv = self._evaluate_stack(list(th), conventional=True)
+            except Exception:
+                logger.exception("Conventional-section check failed for %s", th)
+                continue
+            g_reinf, g_conv = self._governing_cdf(perf), self._governing_cdf(conv)
+            if g_conv < g_reinf:
+                perf["geogrid_credit"] = "no benefit"
+                warnings.append(
+                    f"Geogrid gives no structural benefit for the design {list(th)}: the same "
+                    f"thicknesses without it (IRC:37-2018 §7.2.3 composite) have a lower governing "
+                    f"CDF ({g_conv:.3f} vs {g_reinf:.3f} reinforced). IRC:SP:59 §3.1.3 credits "
+                    f"reinforcement only against the conventional section; consider omitting it."
+                )
+            else:
+                perf["geogrid_credit"] = "benefit"
 
     def _evaluate_stack(self, thicknesses: List[float], conventional: bool = False) -> dict:
         """
@@ -1469,11 +1487,15 @@ class SmartPavementSearch:
 
             if closest_to_passing is not None:
                 worst_cdf = closest_to_passing["max_cdf"]
-                gov = closest_to_passing.get("governing_mode", "fatigue")
+                if closest_to_passing.get("lower_bound"):
+                    cdf_txt = (f"max CDF >= {worst_cdf:.2f} (its CTB axle-spectrum damage was "
+                               f"not evaluated within the time budget)")
+                else:
+                    gov = closest_to_passing.get("governing_mode", "fatigue")
+                    cdf_txt = f"max CDF = {worst_cdf:.2f} (governed by {gov})"
                 infeasibility_msg = (
                     f"Infeasible at given bounds for {msa:.1f} MSA traffic. "
-                    f"Best evaluated design has max CDF = {worst_cdf:.2f} "
-                    f"(governed by {gov}). To find an adequate design, "
+                    f"Best evaluated design has {cdf_txt}. To find an adequate design, "
                     f"either: (a) relax thickness_bounds upward, "
                     f"(b) revisit subgrade CBR (current effective modulus "
                     f"{self.problem.subgrade.modulus:.0f} MPa), "
@@ -1519,6 +1541,8 @@ class SmartPavementSearch:
 
         best = archetypes[0]
         warnings = self._build_warnings()
+        if has_adequate and getattr(self, "_geogrid_vs_conventional", False):
+            self._geogrid_benefit_check(archetypes, warnings)
         # Carry the infeasibility message into the errors list AND the
         # warnings list. Errors are only returned by the API in debug mode,
         # so warnings are the channel that reaches the dashboard user.
@@ -1556,29 +1580,33 @@ class SmartPavementSearch:
         # Designs whose CTB axle-spectrum check was skipped carry only the
         # Eq. 3.5 CTB damage, a lower bound of their governing CDF. Complete
         # them in ascending order until no remaining lower bound can beat
-        # the best complete design (bounded number of re-evaluations).
-        best_cdf, best = None, None
-        completions = 0
+        # the best complete design. Only the wall-clock deadline stops the
+        # completion early; the result is then reported as a lower bound.
+        best_cdf, best, best_is_bound = None, None, False
         for cdf, d in scored:
             if best_cdf is not None and cdf >= best_cdf:
                 break
-            if (d.get("ctb_details") or {}).get("skipped") and completions < 25:
-                completions += 1
-                self._force_ctb_spectrum = True
-                try:
-                    d = self._evaluate(list(d.get("thicknesses") or []))
-                    cdf = self._governing_cdf(d)
-                except Exception:
-                    logger.exception("CTB spectrum completion failed for %s", d.get("thicknesses"))
-                finally:
-                    self._force_ctb_spectrum = False
+            is_bound = False
+            if (d.get("ctb_details") or {}).get("skipped"):
+                if self._deadline_passed():
+                    is_bound = True
+                else:
+                    self._force_ctb_spectrum = True
+                    try:
+                        d = self._evaluate(list(d.get("thicknesses") or []))
+                        cdf = self._governing_cdf(d)
+                    except Exception:
+                        logger.exception("CTB spectrum completion failed for %s", d.get("thicknesses"))
+                        is_bound = True
+                    finally:
+                        self._force_ctb_spectrum = False
             if best_cdf is None or cdf < best_cdf:
-                best_cdf, best = cdf, d
-        max_cdf = best_cdf
+                best_cdf, best, best_is_bound = cdf, d, is_bound
         return {
-            "max_cdf": max_cdf,
+            "max_cdf": best_cdf,
             "thicknesses": best.get("thicknesses"),
-            "governing_mode": best.get("governing_mode"),
+            "governing_mode": None if best_is_bound else best.get("governing_mode"),
+            "lower_bound": best_is_bound,
         }
 
     def _fallback_thicknesses(self) -> List[float]:
