@@ -1995,7 +1995,7 @@ export default function App() {
                         aria-label={sub ? 'Subgrade modulus' : `Layer ${i+1} modulus`}
                         onChange={e=>updateLayer(i,'E',Number(e.target.value))}
                         disabled={sub || !!l.auto_E}
-                        title={sub ? "Determined by the subgrade CBR (Load & subgrade tile)"
+                        title={sub ? "Determined by the subgrade CBR (Load · subgrade tile)"
                           : (l.auto_E && isBit) ? `Auto — IRC:37-2018 Table 9.2, ${binderGrade} at ${temperature} °C${t === 'BM' ? ' (BM: fixed 35 °C value)' : ''}`
                           : l.auto_E ? "Auto — derived from IRC:37-2018 Eq. 7.1 (0.2·h^0.45·E_support); the optimizer re-derives it for every candidate thickness"
                             + (hasGeogrid ? ". Shown value includes the SP:59 geogrid MIF." : "")
@@ -2020,7 +2020,7 @@ export default function App() {
                         <label
                           className="mt-0.5 flex items-center gap-1 cursor-pointer select-none"
                           title={isBit
-                            ? "Auto: take E from IRC:37-2018 Table 9.2 for the binder grade and pavement temperature (Bituminous mix tile). Untick to pin a tested modulus."
+                            ? "Auto: take E from IRC:37-2018 Table 9.2 for the binder grade and pavement temperature (Bituminous mix · climate tile). Untick to pin a tested modulus."
                             : "Auto: derive this granular modulus from IRC:37-2018 Eq. 7.1 (and the §7.2.3 composite rule). Recommended — a pinned E stays constant while the optimizer varies the thickness, which deviates from IRC."}
                         >
                           <input
@@ -2234,8 +2234,8 @@ export default function App() {
               <input id="sp" type="number" step="1" value={wheelSpacing} disabled={wheelType !== 'Dual'} onChange={e=>setWheelSpacing(Number(e.target.value))} className={numIn(wheelType !== 'Dual' && 'opacity-50')} />
             </Field>
             {debugMode && (
-              <Field label="Debug" className="text-[var(--fail)]">
-                <input type="checkbox" checked={debugMode} onChange={e=>setDebugMode(e.target.checked)} className="cursor-pointer" />
+              <Field label="Debug" htmlFor="debugMode" className="text-[var(--fail)]">
+                <input id="debugMode" type="checkbox" checked={debugMode} onChange={e=>setDebugMode(e.target.checked)} className="cursor-pointer" />
               </Field>
             )}
           </div>
