@@ -92,7 +92,7 @@ function useSplitter(initialValue, direction) {
     window.addEventListener('pointercancel', onPointerUp);
   }, [size, direction]);
 
-  return [size, onPointerDown];
+  return [size, onPointerDown, setSize];
 }
 
 
@@ -367,7 +367,7 @@ const DEFAULT_CTB_AXLE_SPECTRUM_TEXT = JSON.stringify([
 
 /*
  * INITIAL design assumptions. Growth rate, design life, VDF and LDF are
- * user-editable in the "Opt Target" panel (state below); these constants
+ * user-editable in the "Traffic · design basis" tile (state below); these constants
  * only seed a fresh project. Both /api/optimize and every advanced panel
  * read the live state values, so they always agree.
  *
@@ -1084,7 +1084,7 @@ export default function App() {
   const fileInputRef = useRef(null);
 
   // Resizable vertical splitter (inputs ↔ preview)
-  const [previewWidth, onPreviewDrag] = useSplitter(Math.max(440, savedData.previewWidth || 440), 'horizontal');
+  const [previewWidth, onPreviewDrag, setPreviewWidth] = useSplitter(Math.max(440, savedData.previewWidth || 440), 'horizontal');
 
 
   // Auto-Save Effect
@@ -1763,12 +1763,12 @@ export default function App() {
 
           <div className="hidden md:flex items-center gap-1">
             <div className="relative" data-menu>
-              <button type="button" className="fp-tbtn" aria-expanded={showDemos} aria-haspopup="menu"
+              <button type="button" className="fp-tbtn" aria-expanded={showDemos}
                 onClick={() => { setShowDemos(v => !v); setShowMoreMenu(false); }}>
                 <Database size={12}/> Use cases <ChevronDown size={11} aria-hidden="true"/>
               </button>
               {showDemos && (
-                <div className={menuPanel} role="menu">
+                <div className={menuPanel}>
                   <div className={menuHead}>IRC-consistent scenarios</div>
                   {usesCases((c) => { handleApplyDemo(c); setShowDemos(false); })}
                 </div>
@@ -1813,7 +1813,7 @@ export default function App() {
               <MoreHorizontal size={14} />
             </button>
             {showMoreMenu && (
-              <div className={menuPanel} role="menu">
+              <div className={menuPanel}>
                 <div className={menuHead}>Project</div>
                 <button type="button" className={menuItem} onClick={() => { fileInputRef.current?.click(); setShowMoreMenu(false); }}><Upload size={11}/> Import</button>
                 <button type="button" className={menuItem} onClick={() => { handleExport(); setShowMoreMenu(false); }}><Download size={11}/> Export</button>
@@ -1834,8 +1834,8 @@ export default function App() {
           last session, not arbitrary defaults; say so once, dismissibly. */}
       {restoredNotice && (
         <div className="px-2 pt-2">
-          <Notice tone="info" onDismiss={() => setRestoredNotice(false)}>
-            <b>Session restored</b> — these inputs and results are your last session, auto-saved in this
+          <Notice tone="info" title="Session restored" onDismiss={() => setRestoredNotice(false)}>
+            These inputs and results are your last session, auto-saved in this
             browser. Use <b>Reset</b> for a fresh project (it offers a JSON export first) or <b>Export</b> to file this one.
           </Notice>
         </div>
@@ -2100,9 +2100,19 @@ export default function App() {
         >
           <div
             onPointerDown={onPreviewDrag}
+            onKeyDown={(e) => {
+              // Keyboard resize: the section grows to the left.
+              if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                e.preventDefault();
+                const step = e.shiftKey ? 40 : 10;
+                setPreviewWidth(Math.max(320, Math.min(720, sectionW + (e.key === 'ArrowLeft' ? step : -step))));
+              }
+            }}
+            tabIndex={0}
             className="hidden xl:block absolute -left-[7px] top-3 bottom-3 w-[10px] cursor-col-resize z-20 select-none touch-none group"
-            title="Drag to resize"
+            title="Drag (or focus and use ← →) to resize"
             role="separator" aria-orientation="vertical" aria-label="Resize cross-section"
+            aria-valuenow={sectionW} aria-valuemin={320} aria-valuemax={720}
           >
             <span className="absolute left-[4px] top-1/2 -translate-y-1/2 h-10 w-[3px] rounded bg-[var(--hairline-strong)] group-hover:bg-[var(--accent)] group-active:bg-[var(--accent)] transition-colors" />
           </div>
@@ -2159,8 +2169,8 @@ export default function App() {
               <Seg label="Terrain" value={terrain} onChange={setTerrain}
                 options={[{ id: 'plain', label: 'Plain', title: 'Rolling / plain terrain (Table 4.2)' }, { id: 'hilly', label: 'Hilly', title: 'Hilly terrain (Table 4.2)' }]} />
               <button type="button"
-                className={cn("text-[10px] font-semibold px-1.5 h-[22px] rounded border transition-colors whitespace-nowrap",
-                  Number(vdf) === vdfSuggest ? "border-[var(--hairline)] text-[var(--text-muted)]" : "border-orange-300 text-orange-700 hover:bg-orange-50")}
+                className="fp-tbtn h-[22px] px-1.5 text-[10px]"
+                aria-pressed={Number(vdf) === vdfSuggest}
                 onClick={() => setVdf(vdfSuggest)}
                 title={`IRC:37-2018 Table 4.2 indicative VDF for ${Math.round(initialTwoWay)} initial two-way CVPD (${terrain})${cwNow.directional ? ', taking the two-way volume as twice the directional CVPD' : ''}. Use only without an axle-load survey (§4.4.6).`}>
                 T 4.2: {vdfSuggest}
@@ -2230,8 +2240,9 @@ export default function App() {
             <Field label="Tyre (MPa)" htmlFor="tyre" title="Contact pressure (IRC: 0.56 MPa; 0.80 MPa is used only for the CTB checks).">
               <input id="tyre" type="number" step="0.01" value={pressure} onChange={e=>setPressure(Number(e.target.value))} className={numIn()}/>
             </Field>
-            <Field label="Spacing (mm)" htmlFor="sp" title="Centre-to-centre spacing of the dual wheels (IRC: 310 mm).">
+            <Field label="Spacing" htmlFor="sp" title="Centre-to-centre spacing of the dual wheels, mm (IRC: 310 mm).">
               <input id="sp" type="number" step="1" value={wheelSpacing} disabled={wheelType !== 'Dual'} onChange={e=>setWheelSpacing(Number(e.target.value))} className={numIn(wheelType !== 'Dual' && 'opacity-50')} />
+              <span className="text-[10px] text-[var(--text-muted)] whitespace-nowrap">mm c/c</span>
             </Field>
             {debugMode && (
               <Field label="Debug" htmlFor="debugMode" className="text-[var(--fail)]">
@@ -2521,9 +2532,9 @@ export default function App() {
                       if (worst == null) return null;
                       return (
                         <div className="fp-kpi justify-center">
-                          <span className="fp-kpi-label">Verdict ({designMsa.toFixed(1)} msa · R{reliabilityPercent})</span>
+                          <span className="fp-kpi-label">Verdict <span className="normal-case">({designMsa.toFixed(1)} msa · R{reliabilityPercent})</span></span>
                           <span>
-                            <Chip tone={worst > 1 ? 'fail' : 'ok'}>{worst > 1 ? 'Fails IRC' : 'Passes IRC'}</Chip>
+                            <Chip tone={worst > 1 ? 'fail' : 'ok'}>{worst > 1 ? 'Not IRC-adequate' : 'IRC-adequate'}</Chip>
                             <span className="text-[10px] text-[var(--text-muted)] ml-1.5">{stackHasCtb ? 'CTB fatigue: run Optimize' : 'bituminous fatigue + subgrade rutting'}</span>
                           </span>
                         </div>
@@ -2568,20 +2579,20 @@ export default function App() {
                     <th className="py-1.5 px-3 border-b border-[var(--hairline)]">Role</th>
                     <th className="py-1.5 px-3 border-b border-[var(--hairline)]">z (mm)</th>
                     <th className="py-1.5 px-3 border-b border-[var(--hairline)]">r (mm)</th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ_z</th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ_t</th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ_r</th>
+                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ<sub>z</sub></th>
+                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ<sub>t</sub></th>
+                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ<sub>r</sub></th>
                     <th
                       className="py-1.5 px-3 border-b border-[var(--hairline)] cursor-help"
                       title={"τ_rz — vertical shear stress (MPa). Not used by any IRC:37 design criterion (fatigue uses ε_t/ε_r, rutting uses ε_z, CTB uses σ_t).\n\nIITPAVE convention note: for a dual wheel evaluated on the symmetry axis (R = spacing/2), the two wheels' shear contributions cancel, so the physically-correct elastic value is ≈ 0 — which is what this solver reports. The original IITPAVE instead reports ≈ 2× the single-wheel shear here, because it superimposes the two wheels without the symmetry sign-flip. The two agree on all design quantities (σ, ε, δ) to <1%; only this non-design shear differs."}
-                    >τ_rz<span className="align-super text-[7px] ml-0.5">&#9432;</span></th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">δ_z (mm)</th>
+                    >τ<sub>rz</sub><span className="align-super text-[8px] ml-0.5">&#9432;</span></th>
+                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">δ<sub>z</sub> (mm)</th>
                     <th
                       className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent)] cursor-help"
                       title="ε_r — radial horizontal strain (tension positive). The IRC:37 fatigue criterion uses the largest TENSILE horizontal strain, max of the signed ε_t, ε_r at the bottom of the bituminous layer; under dual wheels at R = 155 mm, ε_r can govern over ε_t. If both are compressive, fatigue is not checked (IRC:37-2018 Annex III)."
-                    >ε_r<span className="align-super text-[7px] ml-0.5">&#9432;</span></th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--fail)] sticky right-24 z-20 bg-[var(--tile-head)]">ε_z</th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent)] sticky right-0 z-20 bg-[var(--tile-head)]">ε_t</th>
+                    >ε<sub>r</sub><span className="align-super text-[8px] ml-0.5">&#9432;</span></th>
+                    <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--fail)] sticky right-24 z-20 bg-[var(--tile-head)]">ε<sub>z</sub></th>
+                    <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent)] sticky right-0 z-20 bg-[var(--tile-head)]">ε<sub>t</sub></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2635,7 +2646,7 @@ export default function App() {
                 <Info size={16} className="text-orange-600"/> 
                 <span>IndoPave-37 Operations Manual & Usage Guide</span>
               </h2>
-              <button onClick={()=>setShowInstructions(false)} className="text-[var(--text-muted)] hover:text-[var(--text-bold)] p-1 rounded hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors">
+              <button type="button" aria-label="Close usage guide" onClick={()=>setShowInstructions(false)} className="text-[var(--text-muted)] hover:text-[var(--text-bold)] p-1 rounded hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors">
                 <X size={18}/>
               </button>
             </div>
@@ -2736,7 +2747,7 @@ export default function App() {
                           <strong>Check the load:</strong> IRC:37-2018 analyses the standard axle — a dual-wheel set of 20 kN per wheel at 0.56 MPa, 310 mm centre to centre. Other loads can be studied, and are flagged as non-standard.
                         </li>
                         <li>
-                          <strong>Position Analysis Coordinates:</strong> Add coordinates in the Analysis Points Grid where you want to calculate stresses/strains (e.g., bottom of bituminous layer or top of subgrade).
+                          <strong>Position Analysis Coordinates:</strong> Add coordinates in the Analysis points tile where you want stresses and strains, or press <strong>IRC points</strong> to place the critical locations (bottom of the bituminous layer, top of the subgrade).
                         </li>
                         <li>
                           <strong>Evaluate or Optimize:</strong> Click <strong>Evaluate</strong> for a single analysis of the current thicknesses, or check <strong>Opt</strong> on layers and click <strong>Optimize</strong> to search range-based adequate designs.
@@ -2846,12 +2857,12 @@ export default function App() {
                     <div className="border-t border-[var(--hairline)] pt-4">
                       <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2">Multi-Objective Optimization Focus</h3>
                       <p className="mb-2 text-[11px]">
-                        The search checks targets specified under "Opt Target":
+                        The archetypes follow the objectives switched on in the Optimizer tile:
                       </p>
                       <ul className="list-disc ml-5 space-y-1 text-[11px]">
                         <li><strong>Thickness:</strong> Minimizes total structural height to save excavation depth.</li>
                         <li><strong>Cost:</strong> Computes cost based on material volumetric rates to find the cheapest structural alternative.</li>
-                        <li><strong>Carbon Footprint:</strong> Uses material-specific CO₂ footprints to identify low-carbon designs.</li>
+                        <li><strong>Embodied CO₂:</strong> Uses material-specific CO₂ factors to identify low-carbon designs.</li>
                       </ul>
                     </div>
 
@@ -2938,8 +2949,9 @@ export default function App() {
 
             <div className="px-4 py-3 border-t border-[var(--hairline)] bg-[var(--surface-sunken)] flex justify-end">
               <button 
+                type="button"
                 onClick={()=>setShowInstructions(false)} 
-                className="px-4 py-1.5 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-lg text-xs shadow-md transition-all active:scale-95"
+                className="fp-btn-grad px-4 py-1.5 font-bold rounded-md text-xs"
               >
                 Close
               </button>

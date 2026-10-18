@@ -64,7 +64,7 @@ export default function DesignCard({ d, index, colorOf, airVoids, bitumenVolume,
                 <CornerDownLeft size={11} aria-hidden="true" /> Use
               </button>
             )}
-            <Chip tone="ok" title="All applicable IRC:37-2018 criteria are within their limits (CDF ≤ 1)">IRC pass</Chip>
+            <Chip tone="ok" title="All applicable IRC:37-2018 criteria are within their limits (CDF ≤ 1)">IRC-adequate</Chip>
           </div>
           <Chip tone={det.governing_mode === 'long_life' ? 'info' : 'muted'}
                 title={det.governing_mode === 'long_life' && ll ? `Long-life endurance limit (${ll.governing}) is the binding check` : 'The criterion with the highest damage ratio'}>
@@ -112,21 +112,21 @@ export default function DesignCard({ d, index, colorOf, airVoids, bitumenVolume,
         <div className="flex flex-col gap-1.5 rounded-md bg-[var(--surface-sunken)] border border-[var(--hairline)] p-2">
           {compressive ? (
             <div className="flex items-center justify-between text-[10px]">
-              <span className="font-semibold text-[var(--text-muted)] uppercase tracking-wide text-[9.5px]">Fatigue (Eq 3.4)</span>
+              <span className="fp-kpi-label">Fatigue (Eq. 3.{rel === 90 ? 4 : 3})</span>
               <Chip tone="info" title="Every horizontal strain at the bottom of the bituminous layer is compressive: fatigue need not be checked (IRC:37-2018 Annex III).">Not checked · compressive</Chip>
             </div>
           ) : (
-            <UtilBar label="Fatigue CDF (Eq 3.4)" ratio={det.CDF_fatigue} display={pct(det.CDF_fatigue)}
+            <UtilBar label={`Fatigue CDF (Eq. 3.${rel === 90 ? 4 : 3})`} ratio={det.CDF_fatigue} display={pct(det.CDF_fatigue)}
                      note={`εt ${ue(det.eps_t)} µε · allowable ${ue(allow.epsT)} µε`}
                      title="Cumulative fatigue damage = design traffic / allowable repetitions Nf at the bottom of the bituminous layer (IRC:37-2018 §3.6.2)." />
           )}
-          <UtilBar label="Rutting CDF (Eq 3.2)" ratio={det.CDF_rutting} display={pct(det.CDF_rutting)}
+          <UtilBar label={`Rutting CDF (Eq. 3.${rel === 90 ? 2 : 1})`} ratio={det.CDF_rutting} display={pct(det.CDF_rutting)}
                    note={`εv ${ue(det.eps_v)} µε · allowable ${ue(allow.epsV)} µε`}
                    title="Cumulative rutting damage = design traffic / allowable repetitions NR at the top of the subgrade (IRC:37-2018 §3.6.1)." />
           {det.CDF_ctb != null && (
-            <UtilBar label="CTB fatigue (Eq 3.5/3.6)" ratio={det.CDF_ctb} display={pct(det.CDF_ctb)}
+            <UtilBar label="CTB fatigue (Eq. 3.5/3.6)" ratio={det.CDF_ctb} display={pct(det.CDF_ctb)}
                      note={det.CDF_ctb_strain != null && det.ctb_details?.CDF_ctb != null
-                       ? `Eq 3.5 ${Number(det.CDF_ctb_strain).toFixed(3)} · spectrum Eq 3.6 ${Number(det.ctb_details.CDF_ctb).toFixed(3)}`
+                       ? `Eq. 3.5 ${Number(det.CDF_ctb_strain).toFixed(3)} · spectrum Eq. 3.6 ${Number(det.ctb_details.CDF_ctb).toFixed(3)}`
                        : `εt,CTB ${ue(det.eps_t_ctb)} µε · σt ${det.sigma_t_ctb != null ? Math.abs(det.sigma_t_ctb).toFixed(3) : '—'} MPa`}
                      title="Governing CTB fatigue damage: strain criterion Eq. 3.5 and, with an axle spectrum, the stress-ratio CFD Eq. 3.6 — the worse governs." />
           )}

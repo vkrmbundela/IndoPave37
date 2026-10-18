@@ -17,11 +17,11 @@ export function ratioTone(r) {
 
 // Archetype accent (flat; the label may be merged, e.g. "Economy + Sustainable").
 export function archetypeTone(strategy = '') {
-  if (strategy.includes('Premium')) return { color: '#6366f1', key: 'premium' };
-  if (strategy.includes('Structural')) return { color: '#0284c7', key: 'structural' };
-  if (strategy.includes('Economy')) return { color: '#059669', key: 'economy' };
-  if (strategy.includes('Sustainable')) return { color: '#0d9488', key: 'sustainable' };
-  return { color: '#64748b', key: 'design' };
+  if (strategy.includes('Premium')) return { color: 'var(--arch-premium)', key: 'premium' };
+  if (strategy.includes('Structural')) return { color: 'var(--arch-structural)', key: 'structural' };
+  if (strategy.includes('Economy')) return { color: 'var(--arch-economy)', key: 'economy' };
+  if (strategy.includes('Sustainable')) return { color: 'var(--arch-sustainable)', key: 'sustainable' };
+  return { color: 'var(--text-muted)', key: 'design' };
 }
 
 // Indian number formatting: ₹ lakh / crore per lane-km.

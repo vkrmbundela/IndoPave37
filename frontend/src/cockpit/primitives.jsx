@@ -71,7 +71,7 @@ export function UtilBar({ label, ratio, display, title, note, ariaLabel }) {
   return (
     <div className="flex flex-col gap-0.5" title={title}>
       <div className="flex items-baseline justify-between gap-2 text-[10px]">
-        <span className="font-semibold text-[var(--text-muted)] uppercase tracking-wide text-[9.5px] truncate">{label}</span>
+        <span className="fp-kpi-label truncate">{label}</span>
         <span className="fp-num font-semibold" style={{ color: TONE_FILL[tone] }}>{display}</span>
       </div>
       <div className="fp-bar" role="meter" aria-label={ariaLabel || (typeof label === 'string' ? label : undefined)} aria-valuemin={0} aria-valuemax={max}

@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* `dark:` utilities follow the app's theme toggle (.theme-dark on <html>),
+   not the operating-system preference. */
+@custom-variant dark (&:where(.theme-dark, .theme-dark *));
+
 @theme {
   --font-sans: "Poppins", "Inter", system-ui, -apple-system, sans-serif;
   /* Numeric / data text (AGENTS.md: Poppins for UI, Inter for data). */
@@ -54,6 +58,16 @@
   /* Utilization bar track */
   --track: #e2e8f0;
 
+  /* Optimizer archetypes (cards, comparison) */
+  --arch-structural: #0369a1;
+  --arch-economy: #047857;
+  --arch-sustainable: #0f766e;
+  --arch-premium: #4f46e5;
+
+  /* Primary action fill: white text at >= 4.5:1 */
+  --accent-strong: #c2410c;
+  --accent-strong-hover: #9a3412;
+
   /* Elevation scale (soft, layered — not heavy) */
   --elev-1: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
   --elev-2: 0 2px 4px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.05);
@@ -72,6 +86,10 @@
 
 .theme-dark {
   color-scheme: dark;
+  --arch-structural: #38bdf8;
+  --arch-economy: #34d399;
+  --arch-sustainable: #2dd4bf;
+  --arch-premium: #a5b4fc;
   --tile-head: #1a2436;
   --track: #334155;
   --ok: #34d399;
@@ -341,14 +359,14 @@ button, select, input, a, [role="button"] {
 
 /* Primary action — flat accent fill (the class keeps its historical name) */
 .fp-btn-grad {
-  background-color: var(--accent);
+  background-color: var(--accent-strong);
   color: #fff;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--accent-strong);
   box-shadow: var(--elev-1);
 }
 .fp-btn-grad:hover:not(:disabled) {
-  background-color: #c2410c;
-  border-color: #c2410c;
+  background-color: var(--accent-strong-hover);
+  border-color: var(--accent-strong-hover);
 }
 .fp-btn-grad:active:not(:disabled) {
   transform: translateY(1px);
@@ -456,13 +474,6 @@ button, select, input, a, [role="button"] {
 }
 .fp-kpi-unit { font-size: 10px; font-weight: 500; color: var(--text-muted); margin-left: 2px; }
 .fp-kpi-sub { font-size: 9.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* Value changed: brief accent wash so the eye finds what moved. */
-@keyframes fpFlash {
-  from { background-color: rgba(234, 88, 12, 0.22); }
-  to   { background-color: transparent; }
-}
-.fp-flash { animation: fpFlash .9s ease-out; }
 
 /* Utilization bar (demand / capacity). The fill animates from 0 on mount. */
 .fp-bar {
