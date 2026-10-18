@@ -238,7 +238,7 @@ function designBasis(doc, traffic, cbr, sol, mix) {
     ['Years from count to opening (x)', `${xYears} years`, 'Eq 4.6: A = P(1+r)^x'],
     ['Annual growth rate', `${grPct.toFixed(1)} %`, ''],
     ['Vehicle damage factor (VDF)', String(num(traffic.vdf, 2.5)), 'std axles / CV'],
-    ['Lane distribution factor (LDF)', String(num(traffic.ldf, 0.75)), 'design-lane share, Sec 4.5'],
+    ['Lane distribution factor (LDF)', String(num(traffic.ldf, 0.75)), traffic.carriageway_label ? `${traffic.carriageway_label}, Sec 4.5.1` : 'design-lane share, Sec 4.5'],
     ['Design life', `${num(traffic.design_life, 20)} years`, ''],
     ['Cumulative design traffic', `${msa.toFixed(2)} MSA`, '365.A.D.F.((1+r)^n-1)/r, A = P(1+r)^x'],
   ]);
@@ -267,11 +267,17 @@ function designBasis(doc, traffic, cbr, sol, mix) {
   y = sectionHeading(doc, y, 'Reliability & Mix', 'IRC:37-2018 Sec 3.7, 3.6.2');
   const va = num(mix?.airVoids, num(d.air_voids, 3));
   const vbe = num(mix?.bitumenVolume, num(d.bitumen_volume, 11.5));
-  kvTable(doc, y, [
+  const mixRows = [
     ['Design reliability level', rel, 'Sec 3.7'],
     ['Air voids Va (bottom mix)', `${va} %`, 'fatigue C-factor'],
     ['Effective bitumen volume Vbe', `${vbe} %`, 'fatigue C-factor'],
-  ]);
+  ];
+  if (mix?.binderGrade) mixRows.push(['Binder of the bottom mix', String(mix.binderGrade), 'Table 9.2']);
+  if (mix?.temperature != null) mixRows.push(['Average annual pavement temperature', `${num(mix.temperature)} deg C`, 'Table 9.2 (20-40 deg C)']);
+  if (mix?.table92 != null) mixRows.push(['Table 9.2 modulus (maximum for design)', `${num(mix.table92).toFixed(0)} MPa`, 'Sec 9.2']);
+  if (d.long_life) mixRows.push(['Long-life pavement', 'yes - et <= 80 ue, ev <= 200 ue', 'Sec 10, Annex II.6']);
+  if (mix?.hasSami) mixRows.push(['Crack relief over CTB', 'SAMI (not a structural layer)', 'Sec 8.3']);
+  kvTable(doc, y, mixRows);
 }
 
 // ---- Composition + cross-section ----
@@ -397,8 +403,8 @@ function compliance(doc, sol, traffic = {}) {
   const relPct = relUsed === 'R90' ? '90%' : '80%';
 
   const cdfR = num(d.CDF_rutting), nr = num(d.NR);
-  // NOTE: in IRC:37-2018, Eq. 3.1/3.2 are the FATIGUE models and Eq. 3.3/3.4
-  // are the RUTTING models (an earlier report revision had them swapped).
+  // NOTE: in IRC:37-2018, Eq. 3.1/3.2 are the RUTTING models and Eq. 3.3/3.4
+  // are the FATIGUE models (an earlier report revision had them swapped).
   y = criterion(doc, y, 'Subgrade Rutting', 'IRC:37 Sec 3.6.1 - Eq 3.1/3.2',
     `N_R = ${rutCoeff} . (1/ev)^4.5337   (${relPct} reliability; ev = vertical compressive strain at top of subgrade)`,
     [['Quantity', 'Computed', 'Allowable', 'CDF (<=1.0)'],
@@ -445,6 +451,17 @@ function compliance(doc, sol, traffic = {}) {
         : '   (stress-ratio spectrum check not run - no axle spectrum supplied)'),
       rows,
       cdfC <= 1.0);
+  }
+  if (d.long_life) {
+    // IRC:37-2018 Sec 10 / Annex II.6: endurance limits of a long-life pavement.
+    const ll = d.long_life;
+    const compressive = fatigueIsCompressive(d);
+    const rows = [['Quantity', 'Computed', 'Limit', 'Ratio (<=1.0)']];
+    rows.push(['et (bottom of bituminous layer)', compressive ? 'compressive' : ue(d.eps_t), '80 ue', compressive ? 'not checked' : num(ll.ratio_t).toFixed(3)]);
+    rows.push(['ev (top of subgrade)', ue(d.eps_v), '200 ue', num(ll.ratio_v).toFixed(3)]);
+    y = criterion(doc, y, 'Long-Life Pavement (Endurance Limits)', 'IRC:37 Sec 10 - Annex II.6',
+      'Perpetual pavement: tensile strain within the 80 ue endurance limit (35 deg C) and subgrade strain within 200 ue, in addition to the criteria above.',
+      rows, !!ll.ok);
   }
   const ok = !!d.overall_adequate;
   const [bg, fg] = ok ? [GREEN_BG, GREEN] : [RED_BG, RED];
@@ -530,11 +547,11 @@ function clausesAndAlternatives(doc, sol, designs, granularAutoE, traffic = {}) 
 // Build the report and return the jsPDF document WITHOUT saving — separated
 // from generatePdfReport so the layout can be exercised headlessly (tests /
 // dev-tools can inspect doc.output(...) instead of triggering a download).
-export function buildPdfReport({ projectName, trafficParams, subgradeCbr, selectedSolution, adequateDesigns, airVoids, bitumenVolume, granularAutoE = false }) {
+export function buildPdfReport({ projectName, trafficParams, subgradeCbr, selectedSolution, adequateDesigns, airVoids, bitumenVolume, granularAutoE = false, binderGrade, temperature, table92, hasSami = false }) {
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const sol = selectedSolution || {};
   const traffic = trafficParams || {};
-  const mix = { airVoids, bitumenVolume };
+  const mix = { airVoids, bitumenVolume, binderGrade, temperature, table92, hasSami };
   cover(doc, projectName, traffic, subgradeCbr, sol);
   doc.addPage(); designBasis(doc, traffic, subgradeCbr, sol, mix);
   doc.addPage(); composition(doc, sol, granularAutoE);

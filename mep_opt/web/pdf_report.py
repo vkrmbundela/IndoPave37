@@ -674,6 +674,22 @@ def _compliance(styles, sol):
             rows,
             ok=(cdf_c <= 1.0)))
 
+    # --- Long-life pavement (IRC:37-2018 §10 / Annex II.6) ---
+    ll = details.get('long_life')
+    if isinstance(ll, dict):
+        compressive = bool(details.get('fatigue_compressive'))
+        rows = [["Quantity", "Computed", "Limit", "Ratio (≤ 1.0)"],
+                ["εₜ (bottom of bituminous layer)",
+                 "compressive" if compressive else fmt_strain(details.get('eps_t')),
+                 "80 µε", "not checked" if compressive else f"{_f(ll.get('ratio_t')):.3f}"],
+                ["εᵥ (top of subgrade)", fmt_strain(details.get('eps_v')), "200 µε",
+                 f"{_f(ll.get('ratio_v')):.3f}"]]
+        story.append(_criterion_block(
+            styles, "Long-Life Pavement (Endurance Limits)", "IRC:37-2018 §10 · Annex II.6",
+            "Perpetual pavement: tensile strain within the 80 µε endurance limit (35 °C) and "
+            "subgrade strain within 200 µε, in addition to the criteria above.",
+            rows, ok=bool(ll.get('ok'))))
+
     # Overall verdict line
     adequate = bool(details.get('overall_adequate', False))
     clr = GREEN if adequate else RED

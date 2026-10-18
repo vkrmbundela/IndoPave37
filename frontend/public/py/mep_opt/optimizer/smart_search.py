@@ -80,6 +80,15 @@ UNBOUND_BASE_TYPES = {"WMM", "WBM"}
 # crack-relief layer above a cement-treated base.
 CRACK_RELIEF_MODULUS_MPA = 450.0
 
+# IRC:37-2018 §10 / Annex II.6 — long-life (perpetual) pavement endurance
+# limits for the plains of India (average annual pavement temperature
+# ~35 °C): horizontal tensile strain at the bottom of the bituminous layer
+# <= 80 µε, vertical compressive strain at the top of the subgrade <= 200 µε.
+LONG_LIFE_EPS_T = 80e-6
+LONG_LIFE_EPS_V = 200e-6
+# §4.3.1 / §10: design traffic from which a long-life pavement is recommended.
+LONG_LIFE_MSA = 300.0
+
 # Fallback cost when a material has no entry in the rate table.
 # Matches the fallback used by estimate_cost() so optimizer ranking and the
 # final cost report stay consistent.
@@ -180,6 +189,32 @@ class SmartPavementSearch:
             warnings.append(
                 f"Traffic growth rate {growth_rate:.3f} is below 5%; "
                 "design traffic may be optimistic relative to standard practice."
+            )
+
+        # IRC:37-2018 §4.3.1 / §10 — long-life pavements.
+        design_life = getattr(self.problem.traffic, "design_life_years", None)
+        if getattr(self.problem, "long_life", False):
+            warnings.append(
+                "Long-life pavement (IRC:37-2018 §10, Annex II.6): designs must also keep "
+                "the bituminous tensile strain <= 80 µε (endurance limit at 35 °C) and the "
+                "subgrade vertical strain <= 200 µε."
+            )
+            if abs(float(getattr(self.problem, "temperature", 35.0)) - 35.0) > 1e-9:
+                warnings.append(
+                    "IRC:37-2018 §10 states the 80 µε endurance limit for an average annual "
+                    f"pavement temperature of 35 °C; the design temperature is "
+                    f"{self.problem.temperature:g} °C."
+                )
+        elif msa >= LONG_LIFE_MSA or category == "expressway":
+            reason = "an expressway" if category == "expressway" else f"{msa:.0f} msa (>= 300 msa)"
+            note = (
+                f" The design period of {design_life} years is below that minimum."
+                if design_life is not None and design_life < 30 else ""
+            )
+            warnings.append(
+                f"IRC:37-2018 §4.3.1: for {reason} the pavement should preferably be "
+                "designed as a long-life pavement (§10); otherwise for a minimum design "
+                f"period of 30 years.{note}"
             )
 
         # IRC:37-2018 §3.7 — reliability escalation (category or >= 20 msa).
@@ -691,6 +726,28 @@ class SmartPavementSearch:
 
         overall_adequate = bool(chk["overall_adequate"]) and ctb_adequate
 
+        # IRC:37-2018 §10 / Annex II.6 long-life check: strain ratios to the
+        # endurance limits. Fatigue is not checked when every bituminous
+        # strain is compressive (Annex III) or there is no bituminous layer.
+        long_life = None
+        if getattr(self.problem, "long_life", False):
+            ratio_t = (
+                eps_t / LONG_LIFE_EPS_T
+                if ("bit_bottom" in std_idx_map and not fatigue_compressive)
+                else 0.0
+            )
+            ratio_v = eps_v / LONG_LIFE_EPS_V
+            long_life = {
+                "eps_t_limit": LONG_LIFE_EPS_T,
+                "eps_v_limit": LONG_LIFE_EPS_V,
+                "ratio_t": ratio_t,
+                "ratio_v": ratio_v,
+                "ratio": max(ratio_t, ratio_v),
+                "governing": "fatigue" if ratio_t >= ratio_v else "rutting",
+                "ok": max(ratio_t, ratio_v) <= 1.0,
+            }
+            overall_adequate = overall_adequate and long_life["ok"]
+
         # Determine governing mode including CTB
         cdfs = {
             "fatigue": chk["CDF_fatigue"],
@@ -698,6 +755,8 @@ class SmartPavementSearch:
         }
         if ctb_cdf is not None:
             cdfs["ctb"] = ctb_cdf
+        if long_life is not None:
+            cdfs["long_life"] = long_life["ratio"]
         governing_mode = max(cdfs, key=cdfs.get)
 
         return {
@@ -715,6 +774,8 @@ class SmartPavementSearch:
             "Nf_ctb_strain": ctb_nf_strain,
             "ctb_rf": ctb_rf,
             "ctb_details": ctb_details,
+            # IRC §10 long-life strain ratios (None when not requested).
+            "long_life": long_life,
             # Reliability level actually used for the performance equations
             # (post §3.7 auto-escalation) — consumed by the UI/PDF so the
             # printed coefficients match the computation.
@@ -1199,11 +1260,13 @@ class SmartPavementSearch:
 
     @staticmethod
     def _governing_cdf(d: dict) -> float:
-        """Worst-case CDF among the three failure modes."""
+        """Worst-case CDF among the failure modes (and the IRC §10 long-life
+        strain ratio when that check was requested)."""
         return max(
             d.get("CDF_fatigue", 0.0) or 0.0,
             d.get("CDF_rutting", 0.0) or 0.0,
             d.get("CDF_ctb") or 0.0,
+            (d.get("long_life") or {}).get("ratio") or 0.0,
         )
 
     @staticmethod

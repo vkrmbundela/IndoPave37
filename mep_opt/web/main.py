@@ -420,6 +420,14 @@ class OptimizeRequest(BaseModel):
     optimize_by_cost: bool = False
     optimize_by_co2: bool = False
 
+    # IRC:37-2018 §8.3: a SAMI crack-relief treatment over the CTB (not a
+    # structural layer, so it is not in `layers`) instead of an aggregate
+    # crack-relief layer.
+    has_sami: bool = False
+    # IRC:37-2018 §10 / Annex II.6 long-life pavement (endurance limits
+    # 80 µε bituminous tensile strain, 200 µε subgrade vertical strain).
+    long_life: bool = False
+
     @field_validator("material_rates")
     @classmethod
     def normalize_material_rates(cls, v):
@@ -815,6 +823,8 @@ async def run_optimization(data: OptimizeRequest):
             eval_points=[{"z": p.z, "r": p.r} for p in (data.points or [])] if data.points else None,
             optimize_by_cost=data.optimize_by_cost,
             optimize_by_co2=data.optimize_by_co2,
+            has_sami=data.has_sami,
+            long_life=data.long_life,
         )
 
 

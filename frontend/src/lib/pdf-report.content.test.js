@@ -127,3 +127,25 @@ describe('pdf-report content (verification round 3)', () => {
     expect(page4).toMatch(/Bituminous Fatigue Cracking.*Eq 3\.3\/3\.4/);
   });
 });
+
+describe('long-life pavement and mix basis (IRC:37-2018 Sec 10, Table 9.2)', () => {
+  it('prints the endurance-limit check when the design is long-life', () => {
+    const sol = solution({ msa: 320, eps_t: 76e-6, eps_v: 150e-6,
+      long_life: { eps_t_limit: 80e-6, eps_v_limit: 200e-6, ratio_t: 0.95, ratio_v: 0.75, ratio: 0.95, governing: 'fatigue', ok: true } });
+    const text = allText(buildPdfReport({
+      projectName: 'll', trafficParams: { cvpd: 4000, growth_rate: 0.05, vdf: 5, ldf: 0.6, design_life: 30, road_category: 'expressway' },
+      subgradeCbr: 7, selectedSolution: sol, adequateDesigns: [sol], airVoids: 3, bitumenVolume: 11.5,
+      binderGrade: 'VG40', temperature: 35, table92: 3000,
+    }));
+    expect(text).toContain('Long-Life Pavement (Endurance Limits)');
+    expect(text).toContain('80 ue');
+    expect(text).toContain('0.950');
+    expect(text).toContain('Binder of the bottom mix');
+    expect(text).toContain('VG40');
+    expect(text).toContain('3000 MPa');
+  });
+  it('omits the long-life check for a conventional design', () => {
+    const text = allText(build(solution()));
+    expect(text).not.toContain('Long-Life Pavement');
+  });
+});

@@ -134,6 +134,14 @@ class OptimizationProblem:
     # otherwise catch.
     has_sami: bool = False
 
+    # IRC:37-2018 §10 / §4.3.1 / Annex II.6 — long-life (perpetual) pavement.
+    # Recommended for design traffic >= 300 msa and for expressways. In
+    # addition to the fatigue/rutting/CTB criteria, the horizontal tensile
+    # strain at the bottom of the bituminous layer must stay within the
+    # endurance limit (80 µε at 35 °C) and the vertical strain at the top of
+    # the subgrade within 200 µε.
+    long_life: bool = False
+
     # Traffic-tier minimum-thickness pre-filter (IRC 37:2018 page 42 +
     # MoRTH 500 practice). When None the optimizer uses the table at the
     # top of this module. Set `ignore_minimum_thickness=True` to skip the

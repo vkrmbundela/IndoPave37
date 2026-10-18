@@ -126,21 +126,24 @@ export default function AdvancedPanel({ sharedState, onClose, onUpdateLayer }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[1px]" onClick={onClose}>
       <div
-        className="bg-white rounded-lg shadow-2xl flex flex-col overflow-hidden"
-        style={{ width: 'calc(100vw - 64px)', height: 'calc(100vh - 64px)' }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="advanced-title"
+        className="fp-fade-up bg-[var(--surface-panel)] border border-[var(--hairline)] rounded-[var(--radius-tile)] shadow-2xl flex flex-col overflow-hidden"
+        style={{ width: 'min(calc(100vw - 32px), 1600px)', height: 'calc(100dvh - 48px)' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex-none flex items-center justify-between px-4 py-2.5 border-b border-gray-200 bg-gray-50">
+        <div className="flex-none flex items-center justify-between px-4 py-2 border-b border-[var(--hairline)] bg-[var(--tile-head)]">
           <div className="flex items-center gap-2">
-            <Zap size={16} className="text-orange-600" />
-            <span className="text-sm font-bold text-gray-900">Advanced Analysis</span>
-            <span className="text-[10px] text-gray-400 bg-orange-50 border border-orange-200 rounded px-1.5 py-0.5 font-medium">v2</span>
+            <Zap size={15} className="text-[var(--accent)]" aria-hidden="true" />
+            <h2 id="advanced-title" className="m-0 text-sm font-bold text-[var(--text-bold)]">Advanced analysis</h2>
+            <span className="text-[10px] text-[var(--text-muted)]">Esc to close</span>
           </div>
-          <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded transition-colors">
-            <X size={16} className="text-gray-500" />
+          <button type="button" onClick={onClose} aria-label="Close advanced analysis" className="p-1 hover:bg-[var(--surface-sunken)] rounded transition-colors">
+            <X size={16} className="text-[var(--text-muted)]" />
           </button>
         </div>
 
@@ -194,7 +197,7 @@ export default function AdvancedPanel({ sharedState, onClose, onUpdateLayer }) {
         </div>
 
         {/* Tab Bar */}
-        <div className="flex-none flex items-center gap-0.5 px-3 py-1.5 border-b border-gray-100 bg-white overflow-x-auto">
+        <div className="flex-none flex items-center gap-0.5 px-3 py-1.5 border-b border-[var(--hairline)] bg-[var(--surface-panel)] overflow-x-auto" role="tablist" aria-label="Advanced modules">
           {TABS.map(tab => {
             const Icon = tab.icon;
             const isActive = tab.id === activeTab;
@@ -202,6 +205,9 @@ export default function AdvancedPanel({ sharedState, onClose, onUpdateLayer }) {
             return (
               <button
                 key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
                 onClick={() => isEnabled && setActiveTab(tab.id)}
                 disabled={!isEnabled}
                 title={!isEnabled ? (tab.disabledHint || 'Coming Soon') : tab.label}
@@ -239,7 +245,7 @@ export default function AdvancedPanel({ sharedState, onClose, onUpdateLayer }) {
         </AdvancedProvider>
 
         {/* Footer - Status Bar */}
-        <div className="flex-none flex items-center justify-between px-4 py-1.5 border-t border-gray-100 bg-gray-50 text-[10px] text-gray-400">
+        <div className="flex-none flex items-center justify-between px-4 py-1.5 border-t border-[var(--hairline)] bg-[var(--tile-head)] text-[10px] text-[var(--text-muted)]">
           <span>
             {sharedState.numLayers} layers | {sharedState.wheelType} {sharedState.load}N |
             CBR {sharedState.subgradeCbr}% | {sharedState.cvpd} CVPD | R{sharedState.reliabilityPercent} |

@@ -318,3 +318,166 @@ export function classifyPointRoles(layers, numLayers, points, tolMm = 5) {
     subTopZ: subTop,
   };
 }
+
+// ---------------------------------------------------------------------------
+// IRC:37-2018 §9.2: all bituminous layers are ONE layer in the analysis, with
+// the modulus (and Poisson's ratio) of the bottom bituminous mix. Returns the
+// layers with that E / nu on every bituminous row — what the optimizer
+// analyses (smart_search._build_solver_inputs) — so Evaluate and the advanced
+// panels agree with it. Other rows are returned unchanged.
+// ---------------------------------------------------------------------------
+export function applyBundleModulus(layers, numLayers) {
+  if (!Array.isArray(layers)) return layers;
+  const n = Math.min(numLayers ?? layers.length, layers.length);
+  const isBit = (l) => {
+    const t = classify(l);
+    return BITUMINOUS.has(t) || /\b(BC|DBM|BM|SDBC|SMA)\b/.test(t);
+  };
+  let bottom = -1;
+  for (let i = 0; i < n - 1; i++) if (isBit(layers[i])) bottom = i;
+  if (bottom < 0) return layers;
+  const { E, nu } = layers[bottom];
+  let changed = false;
+  const out = layers.map((l, i) => {
+    if (i >= n - 1 || i === bottom || !isBit(l)) return l;
+    if (l.E === E && l.nu === nu) return l;
+    changed = true;
+    return { ...l, E, nu };
+  });
+  return changed ? out : layers;
+}
+
+// ---------------------------------------------------------------------------
+// IRC:37-2018 Table 9.2 — indicative (maximum) resilient modulus of the
+// bituminous mix vs average annual pavement temperature. Mirrors
+// irc37.BITUMINOUS_MODULUS_TABLE / get_bituminous_modulus (linear between the
+// tabulated temperatures, held at the ends) and get_bm_modulus (BM: fixed
+// value at 35 °C). The design modulus is the smaller of the measured value
+// and this table value (§9.2, Table 9.2 note (a)).
+// ---------------------------------------------------------------------------
+export const BINDER_GRADES = [
+  { id: 'VG40', label: 'VG40' },
+  { id: 'VG30', label: 'VG30' },
+  { id: 'VG10', label: 'VG10 (snow-bound)' },
+];
+const T92_TEMPS = [20, 25, 30, 35, 40];
+const T92 = {
+  VG10: [2300, 2000, 1450, 1000, 800],
+  VG30: [3500, 3000, 2500, 2000, 1250],
+  VG40: [6000, 5000, 4000, 3000, 2000],
+};
+const BM_AT_35C = { VG10: 500, VG30: 700 };
+
+export function table92Modulus(grade, temperature, bottomType = 'DBM') {
+  if (String(bottomType).toUpperCase() === 'BM') return BM_AT_35C[grade] ?? 700;
+  const vals = T92[grade] ?? T92.VG30;
+  const t = Number(temperature);
+  if (!Number.isFinite(t) || t <= T92_TEMPS[0]) return vals[0];
+  if (t >= T92_TEMPS[T92_TEMPS.length - 1]) return vals[vals.length - 1];
+  for (let i = 0; i < T92_TEMPS.length - 1; i++) {
+    const t0 = T92_TEMPS[i]; const t1 = T92_TEMPS[i + 1];
+    if (t0 <= t && t <= t1) return vals[i] + ((t - t0) / (t1 - t0)) * (vals[i + 1] - vals[i]);
+  }
+  return vals[vals.length - 1];
+}
+
+// ---------------------------------------------------------------------------
+// Allowable strains for the design traffic — IRC:37-2018 Eq. 3.1-3.4 solved
+// for the strain (irc37.rutting_life / fatigue_life inverted):
+//   rutting  N = k_r (1/eps_v)^4.5337           k_r = 4.1656e-8 (R80), 1.41e-8 (R90)
+//   fatigue  N = k_f C (1/eps_t)^3.89 (1/MRm)^0.854
+//            k_f = 1.6064e-4 (R80), 0.5161e-4 (R90), C = 10^(4.84 (Vbe/(Va+Vbe) - 0.69))
+// Returns { epsT, epsV } as strains (not microstrain); null for no traffic.
+// Annex II.6: 150 msa, R90, VG40 (3000 MPa), Va 3 %, Vbe 11.5 % -> 145 / 292 µε.
+// ---------------------------------------------------------------------------
+export function allowableStrains({ msa, reliability = 90, mrm, airVoids = 3.0, bitumenVolume = 11.5 }) {
+  const N = Number(msa) * 1e6;
+  if (!(N > 0)) return { epsT: null, epsV: null };
+  const r90 = Number(reliability) >= 90;
+  const kr = r90 ? 1.41e-8 : 4.1656e-8;
+  const kf = r90 ? 0.5161e-4 : 1.6064e-4;
+  const epsV = Math.pow(kr / N, 1 / 4.5337);
+  const va = Number(airVoids); const vb = Number(bitumenVolume);
+  const C = Math.pow(10, 4.84 * (vb / (va + vb) - 0.69));
+  const mr = Number(mrm);
+  const epsT = mr > 0 ? Math.pow((kf * C) / (N * Math.pow(mr, 0.854)), 1 / 3.89) : null;
+  return { epsT, epsV };
+}
+
+// ---------------------------------------------------------------------------
+// IRC:37-2018 §10 / §4.3.1 / Annex II.6 — long-life (perpetual) pavement:
+// endurance limits 80 µε (bituminous tensile strain, 35 °C) and 200 µε
+// (subgrade vertical strain); recommended from 300 msa and for expressways.
+// Same constants as smart_search.LONG_LIFE_*.
+// ---------------------------------------------------------------------------
+export const LONG_LIFE_EPS_T = 80e-6;
+export const LONG_LIFE_EPS_V = 200e-6;
+export const LONG_LIFE_MSA = 300;
+export function longLifeRecommended(msa, roadCategory) {
+  return roadCategory === 'expressway' || Number(msa) >= LONG_LIFE_MSA;
+}
+
+// IRC:37-2018 §4.3.1 design period: 20 years for NH, SH and urban roads, 15
+// for other roads; expressways and corridors over 300 msa preferably
+// long-life, otherwise at least 30 years.
+export function recommendedDesignPeriod(roadCategory, msa) {
+  if (longLifeRecommended(msa, roadCategory)) return 30;
+  return ['nh', 'sh', 'urban'].includes(roadCategory) ? 20 : 15;
+}
+
+// ---------------------------------------------------------------------------
+// IRC:37-2018 §4.5.1 lateral (lane) distribution factor by carriageway type.
+// `directional`: the CVPD is the volume in one direction (§4.6.1 — divided
+// carriageways); otherwise it is the two-way volume.
+// ---------------------------------------------------------------------------
+export const CARRIAGEWAYS = [
+  { id: 'single',       label: 'Single lane',                   ldf: 1.0,  directional: false },
+  { id: 'intermediate', label: 'Intermediate lane (5.5 m)',     ldf: 0.75, directional: false },
+  { id: 'two_lane',     label: 'Two-lane two-way',              ldf: 0.5,  directional: false },
+  { id: 'four_single',  label: 'Four-lane single carriageway',  ldf: 0.4,  directional: false },
+  { id: 'dual_2',       label: 'Dual two-lane (4-lane divided)', ldf: 0.75, directional: true },
+  { id: 'dual_3',       label: 'Dual three-lane (6-lane divided)', ldf: 0.60, directional: true },
+  { id: 'dual_4',       label: 'Dual four-lane (8-lane divided)', ldf: 0.45, directional: true },
+];
+
+// ---------------------------------------------------------------------------
+// IRC:37-2018 Table 4.2 indicative VDF, for when no axle-load survey exists
+// (§4.4.6). `twoWayCvpd` is the initial (year of completion) two-way volume.
+// ---------------------------------------------------------------------------
+export function indicativeVdf(twoWayCvpd, terrain = 'plain') {
+  const v = Number(twoWayCvpd) || 0;
+  const band = v <= 150 ? 0 : v <= 1500 ? 1 : 2;
+  return (terrain === 'hilly' ? [0.6, 1.7, 2.8] : [1.7, 3.9, 5.0])[band];
+}
+
+// ---------------------------------------------------------------------------
+// IRC critical analysis locations for the current stack (Evaluate thickness
+// convention: fixed_h, else min_h). IRC:37-2018 §3.6.1 / Annex II:
+//   * bottom of the bottom bituminous layer (fatigue) — just above the
+//     interface (z - 0.1 mm), at r = 0 and between the duals (r = s/2);
+//   * bottom of a CTB (CTB fatigue) — z - 0.1 mm, same radii;
+//   * top of the subgrade (rutting) — just BELOW the interface (z + 0.1 mm),
+//     because eps_z is discontinuous there.
+// Single wheel: r = 0 only.
+// ---------------------------------------------------------------------------
+export function ircCriticalPoints(layers, numLayers, wheelType = 'Dual', wheelSpacing = 310) {
+  if (!Array.isArray(layers) || layers.length < 2) return [];
+  const n = Math.min(numLayers ?? layers.length, layers.length);
+  const structural = layers.slice(0, n - 1);
+  const radii = String(wheelType).toLowerCase() === 'dual'
+    ? [0, Math.round((Number(wheelSpacing) || 310) / 2 * 10) / 10]
+    : [0];
+  let cum = 0; let bit = null; let ctb = null;
+  structural.forEach((l) => {
+    const t = typeOf(l);
+    cum += nominalThickness(l);
+    if (BITUMINOUS.has(t) || /\b(BC|DBM|BM|SDBC|SMA)\b/.test(t)) bit = cum;
+    if (t === 'CTB') ctb = cum;
+  });
+  const round1 = (z) => Math.round(z * 10) / 10;
+  const out = [];
+  if (bit != null && bit > 0.1) radii.forEach((r) => out.push({ z: round1(bit - 0.1), r }));
+  if (ctb != null && ctb > 0.1) radii.forEach((r) => out.push({ z: round1(ctb - 0.1), r }));
+  if (cum > 0) radii.forEach((r) => out.push({ z: round1(cum + 0.1), r }));
+  return out;
+}

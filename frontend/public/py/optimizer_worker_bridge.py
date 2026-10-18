@@ -86,6 +86,9 @@ def _validate_request(data: dict) -> None:
             "reliability must be '80%' or '90%' — IRC:37-2018 defines "
             "performance models for these two levels only."
         )
+    for key in ("has_sami", "long_life"):
+        if key in data and not isinstance(data[key], bool):
+            raise ValueError(f"{key} must be true or false")
     if "road_category" in data and data["road_category"] is None:
         raise ValueError("road_category must be a string")
     normalize_road_category(data.get("road_category", "other"))
@@ -193,6 +196,9 @@ def run_optimize(request_json_str: str) -> str:
         optimize_by_cost = bool(data.get("optimize_by_cost", False))
         optimize_by_co2 = bool(data.get("optimize_by_co2", False))
         ctb_per_class_bridge_recompute = bool(data.get("ctb_per_class_bridge_recompute", False))
+        # IRC:37-2018 §8.3 SAMI crack relief and §10 long-life (as the API).
+        has_sami = bool(data.get("has_sami", False))
+        long_life = bool(data.get("long_life", False))
         
         # Parse axle spectrum
         raw_spectrum = data.get("ctb_axle_spectrum")
@@ -313,6 +319,8 @@ def run_optimize(request_json_str: str) -> str:
             eval_points=points,
             optimize_by_cost=optimize_by_cost,
             optimize_by_co2=optimize_by_co2,
+            has_sami=has_sami,
+            long_life=long_life,
         )
         
         optimizer = SmartPavementSearch(problem)
