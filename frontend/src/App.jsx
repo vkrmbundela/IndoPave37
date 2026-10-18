@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Save, Play, Settings, Plus, Trash2, ArrowRight, Table2, Loader2, Info, X, Download, Upload, Book, RotateCcw, Database, Layers, Zap, AlertCircle, MoreHorizontal, IndianRupee, Activity,
   Sun, Moon, Thermometer, Truck, Gauge, Crosshair, ListChecks, FileText, ChevronDown, Ruler,
+  PieChart, TrendingUp, Leaf, ChevronRight,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -17,9 +18,15 @@ import {
   tensileFatigueStrain, bottomBituminousModulus,
 } from './lib/irc';
 import { generatePdfReport } from './lib/pdf-report';
-import { Tile, Kpi, FlashValue, UtilBar, Chip, Notice, Seg, Field, Toggle } from './cockpit/primitives';
+import { Tile, Kpi, FlashValue, UtilBar, Chip, Notice, Seg, Field, Toggle, RailSection, More } from './cockpit/primitives';
 import DesignCard from './cockpit/DesignCard';
 import DesignCompare from './cockpit/DesignCompare';
+import HeroVerdict from './cockpit/HeroVerdict';
+import StrainProfile from './cockpit/StrainProfile';
+import CrustDonut from './cockpit/CrustDonut';
+import { buildProfileRequest, reduceProfile } from './cockpit/profile';
+import { archetypeTone, formatRupees } from './cockpit/util';
+import { sectionCostCo2 } from './lib/cost';
 
 function ColGrip({ rt, i }) {
   return (
@@ -46,54 +53,6 @@ function cn(...inputs) {
 }
 
 
-/* ─── Drag-to-resize hook (vertical splitter) ─── */
-function useSplitter(initialValue, direction) {
-  const [size, setSize] = useState(initialValue);
-  const dragging = useRef(false);
-  const startPos = useRef(0);
-  const startSize = useRef(0);
-
-  const onPointerDown = useCallback((e) => {
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    e.preventDefault();
-    dragging.current = true;
-    startPos.current = direction === 'horizontal' ? e.clientX : e.clientY;
-    startSize.current = size;
-    document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
-    document.body.style.userSelect = 'none';
-    if (e.currentTarget?.setPointerCapture) {
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId);
-      } catch {
-        // Ignore capture failures and fall back to window listeners.
-      }
-    }
-
-    const onPointerMove = (ev) => {
-      if (!dragging.current) return;
-      const delta = direction === 'horizontal'
-        ? startPos.current - ev.clientX
-        : startPos.current - ev.clientY;
-      const newSize = Math.max(100, startSize.current + delta);
-      setSize(newSize);
-    };
-
-    const onPointerUp = () => {
-      dragging.current = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', onPointerUp);
-      window.removeEventListener('pointercancel', onPointerUp);
-    };
-
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
-    window.addEventListener('pointercancel', onPointerUp);
-  }, [size, direction]);
-
-  return [size, onPointerDown, setSize];
-}
 
 
 function normalizeCtbAxleSpectrum(text) {
@@ -1041,6 +1000,15 @@ export default function App() {
   const [hasSami, setHasSami] = useState(savedData.hasSami ?? DESIGN_DEFAULTS.hasSami);
   // Geometry / moduli the last Evaluate analysed, for its IRC verdict.
   const [evalContext, setEvalContext] = useState(savedData.evalContext || null);
+  // Analysis points follow the IRC critical interfaces of the stack until the
+  // user edits a point (a saved project with points of its own starts manual).
+  const [autoPoints, setAutoPoints] = useState(savedData.autoPoints ?? !savedData.points);
+  // Optimized design shown in the verdict / profile / crust tiles.
+  const [selectedDesign, setSelectedDesign] = useState(0);
+  // Wheel load the last Optimize ran with (for the profile of its designs).
+  const [optContext, setOptContext] = useState(savedData.optContext || null);
+  const [profile, setProfile] = useState(null);
+  const [openLayer, setOpenLayer] = useState(null);
   const [hoverLayer, setHoverLayer] = useState(null);
   // Per-viewer display preference (light is the default theme).
   const [theme, setTheme] = useState(() => {
@@ -1083,16 +1051,13 @@ export default function App() {
   const [debugMode, setDebugMode] = useState(false); // Default to off for production
   const fileInputRef = useRef(null);
 
-  // Resizable vertical splitter (inputs ↔ preview)
-  const [previewWidth, onPreviewDrag, setPreviewWidth] = useSplitter(Math.max(440, savedData.previewWidth || 440), 'horizontal');
-
 
   // Auto-Save Effect
   useEffect(() => {
     const dataToSave = {
       layers, numLayers, load, pressure, wheelType, wheelSpacing, points, numPoints,
       cvpd, subgradeCbr, temperature, airVoids, bitumenVolume, results, optimizationMode,
-      optimizedDesigns, hasStarted, previewWidth,
+      optimizedDesigns, hasStarted, autoPoints, optContext,
       growthRate, designLife, vdf, ldf, roadCategory, constructionYears,
       carriageway, terrain, binderGrade, longLife, hasSami, evalContext,
       materialRates, showRatesPanel,
@@ -1107,7 +1072,7 @@ export default function App() {
   }, [
     layers, numLayers, load, pressure, wheelType, wheelSpacing, points, numPoints,
     cvpd, subgradeCbr, temperature, airVoids, bitumenVolume, results, optimizationMode,
-    optimizedDesigns, hasStarted, previewWidth,
+    optimizedDesigns, hasStarted, autoPoints, optContext,
     growthRate, designLife, vdf, ldf, roadCategory, constructionYears,
     carriageway, terrain, binderGrade, longLife, hasSami, evalContext,
     materialRates, showRatesPanel, debugMode,
@@ -1126,7 +1091,10 @@ export default function App() {
   };
 
   const updateLayer = (idx, f, v) => setLayers(prev => prev.map((l,i) => i===idx ? {...l,[f]:v} : l));
-  const updatePoint = (idx, f, v) => setPoints(prev => prev.map((p,i) => i===idx ? {...p,[f]:v} : p));
+  const updatePoint = (idx, f, v) => {
+    setAutoPoints(false);
+    setPoints(prev => prev.map((p,i) => i===idx ? {...p,[f]:v} : p));
+  };
   const updateMaterialRate = (code, field, value) => setMaterialRates(prev => ({ ...prev, [code]: { ...(prev[code]||{}), [field]: value } }));
 
   useEffect(() => {
@@ -1235,6 +1203,16 @@ export default function App() {
     });
   }, [numPoints]);
 
+  // Auto points: the IRC critical points of the current stack (bottom of the
+  // bituminous layer and of a CTB, top of the subgrade; r = 0 and s/2).
+  useEffect(() => {
+    if (!autoPoints) return;
+    const pts = ircCriticalPoints(layers, numLayers, wheelType, wheelSpacing);
+    if (!pts.length) return;
+    setPoints(prev => (JSON.stringify(prev) === JSON.stringify(pts) ? prev : pts));
+    setNumPoints(n => (n === pts.length ? n : pts.length));
+  }, [autoPoints, layers, numLayers, wheelType, wheelSpacing]);
+
   useEffect(() => {
     if (getSolverMode() === 'backend') return undefined;
     return onSolverStatus((s) => {
@@ -1280,6 +1258,13 @@ export default function App() {
       setResults(data.results || []);
       setEvalContext({
         layers: targetLayers.map(l => ({ type: layerType(l) || l.name, is_fixed: l.is_fixed, fixed_h: l.fixed_h, min_h: l.min_h })),
+        // The analysed stack and wheel load, for the strain-depth profile.
+        stack: analysed.map((l, i) => ({
+          name: i === targetLayers.length - 1 ? 'Subgrade' : (layerType(l) || `Layer ${i + 1}`),
+          h: i === targetLayers.length - 1 ? 0 : Number(l.is_fixed ? (l.fixed_h || 0) : (l.min_h || 0)),
+          E: Number(l.E), nu: Number(l.nu),
+        })),
+        loadCfg: { wheel_load: targetLoad, tire_pressure: targetPressure, wheel_type: targetWheelType, wheel_spacing: targetSpacing },
         numLayers: targetNum,
         mrm: bottomBituminousModulus(analysed, targetNum),
         hasBituminous: targetLayers.slice(0, targetNum - 1).some(l => BIT_TYPES.has(layerType(l))),
@@ -1355,6 +1340,8 @@ export default function App() {
         long_life: longLife,
       });
       setOptimizedDesigns(data.adequate_designs || []);
+      setSelectedDesign(0);
+      setOptContext({ wheel_load: load, tire_pressure: pressure, wheel_type: wheelType, wheel_spacing: wheelSpacing });
       setSp72Info(data.sp72 || null);
       setReinforcementInfo(data.reinforcement && data.reinforcement.length ? data.reinforcement : null);
       // Advisory warnings (reliability auto-escalation, CTB spectrum notes,
@@ -1371,7 +1358,7 @@ export default function App() {
       growthRate, designLife, vdf, ldf, roadCategory, constructionYears,
       carriageway, terrain, binderGrade, longLife, hasSami, wheelSpacing,
       useCtbSpectrum, ctbSpectrumText, ctbPerClassBridgeRecompute,
-      optimizeByCost, optimizeByCo2,
+      optimizeByCost, optimizeByCo2, autoPoints,
     };
     const b = new Blob([JSON.stringify(cfg,null,2)],{type:'application/json'});
     const u = URL.createObjectURL(b);
@@ -1439,6 +1426,7 @@ export default function App() {
         if (hasValue(d.pressure)) setPressure(d.pressure);
         if (hasValue(d.wheelType)) setWheelType(d.wheelType);
         if (Array.isArray(d.points)) setPoints(d.points);
+        setAutoPoints(hasValue(d.autoPoints) ? !!d.autoPoints : !Array.isArray(d.points));
         if (hasValue(d.numPoints)) setNumPoints(d.numPoints);
         if (hasValue(d.cvpd)) setCvpd(d.cvpd);
         if (hasValue(d.subgradeCbr)) setSubgradeCbr(d.subgradeCbr);
@@ -1494,6 +1482,7 @@ export default function App() {
     setWheelSpacing(sp);
     setPoints(pts);
     setNumPoints(pts.length);
+    setAutoPoints(!demo.points);
     if (demo.cvpd) setCvpd(demo.cvpd);
     setSubgradeCbr(cbr);
     setBinderGrade(grade);
@@ -1521,12 +1510,12 @@ export default function App() {
 
   const [showDemos, setShowDemos] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showPointTable, setShowPointTable] = useState(false);
 
-  const inp = "bg-white border border-slate-300 rounded-md px-1.5 py-0.5 text-xs text-slate-800 outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100 hover:border-slate-400 font-mono transition-colors";
+  const inp = "bg-white border border-slate-300 rounded-[var(--radius-control)] px-2.5 h-[34px] text-[13px] text-slate-800 outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-100 hover:border-slate-400 transition-colors";
 
   // Resizable tables — column widths (px) per data table.
-  const layerRT = useResizableTable([92, 236, 62, 132, 64, 204, 150]);
-  const pointsRT = useResizableTable([28, 90, 90]);
+  const pointsRT = useResizableTable([34, 96, 96]);
   const formatSci = (v) => {
     if (v === undefined || v === null) return '—';
     const n = Number(v);
@@ -1579,9 +1568,12 @@ export default function App() {
     const epsV = subRows.length ? Math.max(...subRows.map(r => Math.abs(Number(r.eps_z) || 0))) : null;
     const allow = allowableStrains({ msa: designMsa, reliability: reliabilityPercent, mrm: evalContext.mrm, airVoids, bitumenVolume });
     const compressive = bitRows.length > 0 && epsT === 0;
+    // Largest signed horizontal strain at the bituminous bottom (tension +):
+    // negative when every component is compressive (Annex III).
+    const epsTSigned = bitRows.length ? Math.max(...bitRows.map(r => Math.max(Number(r.eps_t), Number(r.eps_r)))) : null;
     evalVerdict = {
       roles,
-      epsT, epsV, allow, compressive,
+      epsT, epsV, allow, compressive, epsTSigned,
       hasBituminous: evalContext.hasBituminous,
       cdfF: epsT > 0 && allow.epsT ? Math.pow(epsT / allow.epsT, 3.89) : null,
       cdfR: epsV != null && allow.epsV ? Math.pow(epsV / allow.epsV, 4.5337) : null,
@@ -1590,6 +1582,145 @@ export default function App() {
       stale: evalContext.signature !== currentSignature,
     };
   }
+
+  /* ── Showcase models: the section on screen (evaluated trial section, or
+     the optimized design picked below) for the hero, KPI, profile and crust
+     tiles. ── */
+  const designs = optimizationMode && Array.isArray(optimizedDesigns) ? optimizedDesigns.slice(0, 12) : null;
+  const selIdx = designs && designs.length ? Math.min(selectedDesign, designs.length - 1) : null;
+  const selDesign = selIdx != null ? designs[selIdx] : null;
+  const fmtUe = (x) => (x == null || !Number.isFinite(Number(x)) ? '—' : (Math.abs(Number(x)) * 1e6).toFixed(Math.abs(Number(x)) * 1e6 >= 100 ? 0 : 1));
+  const roadLabel = (ROAD_CATEGORIES.find(c => c.id === roadCategory) || {}).label || roadCategory;
+
+  // Strain-depth profile source: stack + wheel load.
+  let profileSrc = null;
+  if (selDesign && Array.isArray(selDesign.details?.layers) && selDesign.details.layers.length > 1) {
+    const rows = selDesign.details.layers;
+    profileSrc = {
+      key: `opt:${selIdx}:${rows.map(r => `${r.name}/${r.thickness}/${r.modulus}/${r.poisson}`).join(',')}`,
+      stack: rows.map((r, i) => ({ name: r.name, h: i === rows.length - 1 ? 0 : Number(r.thickness) || 0, E: Number(r.modulus), nu: Number(r.poisson ?? 0.35) })),
+      load: optContext || { wheel_load: load, tire_pressure: pressure, wheel_type: wheelType, wheel_spacing: wheelSpacing },
+    };
+  } else if (!optimizationMode && results && evalContext?.stack && evalContext?.loadCfg) {
+    profileSrc = { key: `eval:${evalContext.signature}:${results.length}`, stack: evalContext.stack, load: evalContext.loadCfg };
+  }
+  const profileSrcRef = useRef(null);
+  profileSrcRef.current = profileSrc;
+  const profileKey = !isSolving && profileSrc ? profileSrc.key : null;
+  useEffect(() => {
+    const src = profileSrcRef.current;
+    if (!profileKey || !src) { setProfile(null); return undefined; }
+    let cancelled = false;
+    let built;
+    try { built = buildProfileRequest(src); } catch (e) { setProfile({ key: profileKey, error: e.message }); return undefined; }
+    setProfile(p => ({ key: profileKey, data: p?.key === profileKey ? p.data : null, loading: true, points: built.request.points.length, bands: built.bands }));
+    solveAnalysis(built.request)
+      .then(res => { if (!cancelled) setProfile({ key: profileKey, data: reduceProfile(res.results || [], built.depths, built.radii), bands: built.bands }); })
+      .catch(e => { if (!cancelled) setProfile({ key: profileKey, error: e.message, bands: built.bands }); });
+    return () => { cancelled = true; };
+  }, [profileKey]);
+
+  // The section on screen, its allowable strains and its critical responses.
+  const shown = (() => {
+    if (selDesign) {
+      const det = selDesign.details || {};
+      const rows = (det.layers || []).slice(0, -1);
+      const bottomBit = [...rows].reverse().find(l => BIT_TYPES.has(String(l.name).toUpperCase()));
+      const rel = String(det.reliability || '').includes('80') ? 80 : 90;
+      const allow = allowableStrains({ msa: det.msa ?? designMsa, reliability: rel, mrm: bottomBit?.modulus, airVoids, bitumenVolume });
+      const est = sectionCostCo2(rows.map(l => ({ type: l.name, h: Number(l.thickness) })), sanitizeMaterialRates(materialRates));
+      return {
+        kind: 'design', rows: rows.map((l, i) => ({ name: l.name, h: Number(l.thickness), index: i })).filter(l => l.h > 0),
+        epsT: det.eps_t, epsV: det.eps_v, allow, rel, msa: det.msa ?? designMsa,
+        compressive: !!(det.fatigue_compressive || (det.eps_t != null && det.eps_t < 0)), hasBit: !!bottomBit,
+        cost: selDesign.cost != null ? Number(selDesign.cost) : est.cost, co2: selDesign.co2 != null ? Number(selDesign.co2) : est.co2,
+        costEstimated: selDesign.cost == null, co2Estimated: selDesign.co2 == null,
+      };
+    }
+    if (!optimizationMode && results && evalVerdict) {
+      const rows = (evalContext.stack || []).slice(0, -1).map((l, i) => ({ name: l.name, h: l.h, index: i })).filter(l => l.h > 0);
+      const est = sectionCostCo2(rows.map(l => ({ type: l.name, h: l.h })), sanitizeMaterialRates(materialRates));
+      return {
+        kind: 'evaluate', rows, epsT: evalVerdict.compressive ? evalVerdict.epsTSigned : evalVerdict.epsT, epsV: evalVerdict.epsV, allow: evalVerdict.allow, rel: reliabilityPercent, msa: designMsa,
+        compressive: evalVerdict.compressive, hasBit: evalVerdict.hasBituminous,
+        cost: est.cost, co2: est.co2, costEstimated: true, co2Estimated: true,
+      };
+    }
+    const rows = structuralLayers.map((l, i) => ({ name: layerType(l) || l.name, h: nominalH(l), index: i })).filter(l => l.h > 0);
+    const est = sectionCostCo2(rows.map(l => ({ type: l.name, h: l.h })), sanitizeMaterialRates(materialRates));
+    return {
+      kind: 'input', rows, epsT: null, epsV: null, allow: allowNow, rel: reliabilityPercent, msa: designMsa,
+      compressive: false, hasBit: bitLayers.length > 0, cost: est.cost, co2: est.co2, costEstimated: true, co2Estimated: true,
+    };
+  })();
+  const shownCrust = shown.rows.reduce((s, l) => s + l.h, 0);
+  const shownBit = shown.rows.filter(l => BIT_TYPES.has(String(l.name).toUpperCase())).reduce((s, l) => s + l.h, 0);
+
+  // Hero verdict model.
+  const heroState = isSolving ? 'solving'
+    : designs ? (designs.length ? 'design' : 'none')
+    : (!optimizationMode && results && evalVerdict) ? 'evaluate' : 'idle';
+  let heroVerdict = null;
+  if (heroState === 'evaluate') {
+    const v = evalVerdict;
+    const ratios = [];
+    if (v.hasBituminous) {
+      ratios.push(v.compressive
+        ? { key: 'f', label: 'Fatigue', ratio: null, display: 'n/a', sub: 'compressive', title: 'Every horizontal strain at the bottom of the bituminous layer is compressive: fatigue is not checked (IRC:37-2018 Annex III).' }
+        : { key: 'f', label: 'Fatigue', ratio: v.cdfF, sub: `${fmtUe(v.epsT)} / ${fmtUe(v.allow.epsT)} µε`, title: `Fatigue CDF (Eq. 3.${reliabilityPercent === 90 ? 4 : 3}) = (εt / allowable)^3.89` });
+    }
+    ratios.push({ key: 'r', label: 'Rutting', ratio: v.cdfR, sub: `${fmtUe(v.epsV)} / ${fmtUe(v.allow.epsV)} µε`, title: `Rutting CDF (Eq. 3.${reliabilityPercent === 90 ? 2 : 1}) = (εv / allowable)^4.5337` });
+    if (longLife && v.hasBituminous && !v.compressive) ratios.push({ key: 'lt', label: 'Long-life εt', ratio: v.llT, sub: `${fmtUe(v.epsT)} / 80 µε`, title: 'IRC:37-2018 §10 endurance limit for the bituminous tensile strain (35 °C).' });
+    if (longLife) ratios.push({ key: 'lv', label: 'Long-life εv', ratio: v.llV, sub: `${fmtUe(v.epsV)} / 200 µε`, title: 'IRC:37-2018 §10 limit for the subgrade vertical strain.' });
+    const gov = ratios.filter(r => r.ratio != null).reduce((m, r) => (!m || r.ratio > m.ratio ? r : m), null);
+    heroVerdict = {
+      ratios, stale: v.stale,
+      governing: gov ? { label: gov.label, ratio: gov.ratio } : null,
+      adequate: !v.roles.ok || !gov ? null : gov.ratio <= 1,
+      statusText: stackHasCtb && v.roles.ok && gov ? (gov.ratio <= 1 ? 'Passes fatigue and rutting' : null) : null,
+      crust: shownCrust, bit: shownBit,
+      note: !v.roles.ok ? 'The analysis points miss the critical interfaces of the evaluated stack — switch on Auto IRC points (⑥) and evaluate again.'
+        : stackHasCtb ? 'CTB fatigue (Eq. 3.5 / 3.6) is checked by Optimize, at 0.80 MPa.' : null,
+    };
+  } else if (heroState === 'design') {
+    const det = selDesign.details || {};
+    const ll = det.long_life;
+    const MODE = { fatigue: 'Fatigue', rutting: 'Rutting', ctb: 'CTB fatigue', long_life: 'Long-life' };
+    const ratios = [];
+    if (shown.hasBit) {
+      ratios.push(shown.compressive
+        ? { key: 'f', label: 'Fatigue', ratio: null, display: 'n/a', sub: 'compressive', title: 'All horizontal strains at the bituminous bottom are compressive: fatigue not checked (Annex III).' }
+        : { key: 'f', label: 'Fatigue', ratio: det.CDF_fatigue, sub: `${fmtUe(det.eps_t)} / ${fmtUe(shown.allow.epsT)} µε`, title: `Fatigue CDF (Eq. 3.${shown.rel === 90 ? 4 : 3})` });
+    }
+    ratios.push({ key: 'r', label: 'Rutting', ratio: det.CDF_rutting, sub: `${fmtUe(det.eps_v)} / ${fmtUe(shown.allow.epsV)} µε`, title: `Rutting CDF (Eq. 3.${shown.rel === 90 ? 2 : 1})` });
+    if (det.CDF_ctb != null) ratios.push({ key: 'c', label: 'CTB fatigue', ratio: det.CDF_ctb, sub: det.ctb_details?.CDF_ctb != null ? 'Eq. 3.5 + 3.6' : 'Eq. 3.5', title: 'Governing CTB fatigue damage: Eq. 3.5 and, with an axle spectrum, Eq. 3.6.' });
+    if (ll && shown.hasBit && !shown.compressive) ratios.push({ key: 'lt', label: 'Long-life εt', ratio: ll.ratio_t, sub: `${fmtUe(det.eps_t)} / 80 µε`, title: 'IRC:37-2018 §10 endurance limit (35 °C).' });
+    if (ll) ratios.push({ key: 'lv', label: 'Long-life εv', ratio: ll.ratio_v, sub: `${fmtUe(det.eps_v)} / 200 µε`, title: 'IRC:37-2018 §10 subgrade strain limit.' });
+    const govR = Math.max(det.CDF_fatigue || 0, det.CDF_rutting || 0, det.CDF_ctb || 0, ll?.ratio || 0);
+    heroVerdict = {
+      ratios, adequate: true,
+      governing: { label: MODE[det.governing_mode] || 'governing', ratio: govR },
+      title: `#${selIdx + 1} · ${(det.strategy || 'Design').replace(/\s*\+\s*Premium$/, ' = Premium')}`,
+      titleColor: archetypeTone(det.strategy).color,
+      crust: Number(selDesign.total_thickness) || shownCrust, bit: shownBit,
+      extra: selDesign.cost != null ? `${formatRupees(selDesign.cost)}` : null,
+      note: det.geogrid_credit === 'no benefit' ? 'The geogrid gives no structural benefit in this section (IRC:SP:59 §3.1.3).' : null,
+    };
+  } else if (heroState === 'none') {
+    // "Best evaluated design has max CDF = 1.23 (governed by …)" (smart_search).
+    const m = (optimizeWarnings || []).join(' ').match(/max CDF (>=|=) ([0-9]+(?:\.[0-9]+)?)/);
+    heroVerdict = { closest: m ? Number(m[2]) : null, closestLower: m ? m[1] === '>=' : false };
+  }
+
+  // Cumulative design traffic over the design period (sparkline), Eq. 4.5/4.6.
+  const trafficCurve = (() => {
+    const n = Math.max(1, Math.round(Number(designLife) || 1));
+    const out = [];
+    for (let t = 0; t <= n; t += 1) {
+      out.push(t === 0 ? 0 : cumulativeMSA({ cvpd, growthRate, designLife: t, ldf, vdf, constructionYears }));
+    }
+    return out;
+  })();
 
   // Keyboard: Ctrl/⌘+Enter evaluates, Ctrl/⌘+Shift+Enter optimizes.
   useEffect(() => {
@@ -1641,8 +1772,8 @@ export default function App() {
     if (!pts.length) return;
     setPoints(pts);
     setNumPoints(pts.length);
+    setAutoPoints(true);
   };
-  const sectionW = Math.max(320, Math.min(720, previewWidth));
 
   // IRC:37-2018 minimum thickness of a layer (the rules the optimizer always
   // enforces; CTSB 200 mm is only recommended, §7.3.1).
@@ -1705,27 +1836,132 @@ export default function App() {
   }
 
   /* ── MAIN DASHBOARD ── */
-  const menuItem = "w-full text-left px-3 py-1.5 text-[11px] text-[var(--text-main)] hover:bg-[var(--surface-sunken)] hover:text-[var(--text-bold)] flex items-center gap-2 select-none no-underline";
-  const menuPanel = "absolute right-0 mt-1 w-72 bg-[var(--surface-panel)] border border-[var(--hairline)] rounded-lg shadow-xl z-[60] py-1.5 max-h-[70vh] overflow-y-auto fp-fade-up";
-  const menuHead = "px-3 py-1 text-[9.5px] uppercase tracking-wider text-[var(--text-muted)] font-bold";
+  const menuItem = "w-full text-left px-3 py-2 text-[12.5px] text-[var(--text-main)] hover:bg-[var(--surface-sunken)] hover:text-[var(--text-bold)] flex items-center gap-2 select-none no-underline";
+  const menuPanel = "absolute right-0 mt-1 w-80 bg-[var(--surface-panel)] border border-[var(--hairline)] rounded-[var(--radius-control)] shadow-xl z-[60] py-1.5 max-h-[70vh] overflow-y-auto fp-fade-up";
+  const menuHead = "px-3 py-1 text-[10.5px] uppercase tracking-wider text-[var(--text-muted)] font-bold";
   const usesCases = (onPick) => DEMO_CASES.map((c, i) => (
     <button key={i} type="button" onClick={() => onPick(c)} className={menuItem}>
-      <ArrowRight size={10} className="text-[var(--accent)] flex-none" aria-hidden="true" />
+      <ArrowRight size={12} className="text-[var(--accent)] flex-none" aria-hidden="true" />
       <span className="truncate">{c.name}</span>
     </button>
   ));
-  const numIn = (extra) => cn(inp, "w-full min-w-0 py-0.5 fp-num", extra);
+  const numIn = (extra) => cn(inp, "w-full min-w-0 fp-num", extra);
+  const selIn = (extra) => cn(inp, "w-full min-w-0 cursor-pointer font-sans", extra);
+  const unitIn = (unit, input) => (
+    <span className="fp-unit-in">{input}<span aria-hidden="true">{unit}</span></span>
+  );
+
+  // Auto modulus on / off for a layer (the rail's "Auto" switch).
+  const setAutoE = (i, checked) => {
+    setLayers(prev => prev.map((layer, j) => {
+      if (j !== i) return layer;
+      const updates = { ...layer, auto_E: checked };
+      // Auto -> pinned on a geogrid layer: the auto E already includes the
+      // MIF (computeGranularAutoE), but a pinned E is the UNREINFORCED modulus
+      // that gets the MIF on top. Store E / MIF (same getMif call and subgrade
+      // MRS as computeGranularAutoE) so the MIF is not applied twice. Only when
+      // the shown E really is the engine's reinforced value: after a failed or
+      // still-pending computation it is not, and dividing would silently
+      // cancel the MIF.
+      const engine = engineGranularE.find(x => x.index === j);
+      const shownIsReinforced = !autoEError && engine && engine.auto
+        && Math.abs(Number(layer.E) - engine.E) <= 0.05;
+      if (layer.auto_E && !checked && layer.geogrid && layer.geogrid !== 'none' && shownIsReinforced) {
+        const mif = getMif(subgradeModulusFromCBR(subgradeCbr), layer.geogrid);
+        const curE = Number(layer.E);
+        if (mif > 0 && Number.isFinite(curE) && curE > 0) {
+          updates.E = Math.round((curE / mif) * 10) / 10;
+        }
+      }
+      return updates;
+    }));
+  };
+  const setLayerMode = (i) => {
+    const nextFixed = !layers[i].is_fixed;
+    setLayers(prev => prev.map((layer, j) => {
+      if (j !== i) return layer;
+      const updates = { ...layer, is_fixed: nextFixed };
+      if (!nextFixed) {
+        const type = layerType(layer) || layer.type || '';
+        if (updates.min_h === undefined || updates.min_h === null || updates.min_h === 0) {
+          updates.min_h = type === 'BC' ? 30 :
+                          type === 'DBM' ? 50 : 150;
+        }
+        if (updates.max_h === undefined || updates.max_h === null || updates.max_h === 0) {
+          updates.max_h = type === 'BC' ? 80 :
+                          type === 'DBM' ? 250 : 300;
+        }
+      }
+      return updates;
+    }));
+  };
+  const setLayerMaterial = (i, v) => {
+    setLayers(prev => prev.map((layer, j) => {
+      if (j !== i) return layer;
+      const updates = { ...layer, type: v };
+      // Auto-fill E and ν only when the current values match the *previous*
+      // material's defaults (meaning user hasn't customised them) or when
+      // switching from "— none —". This keeps auto-fill optional.
+      if (v && MATERIAL_DATABASE[v]) {
+        const mat = MATERIAL_DATABASE[v];
+        const prevType = layerType(layer);
+        const prevMat = prevType && MATERIAL_DATABASE[prevType];
+        const ePristine = !prevMat || layer.E === prevMat.default_E;
+        const nuPristine = !prevMat || layer.nu === prevMat.default_nu;
+        if (ePristine) updates.E = mat.default_E;
+        if (nuPristine) updates.nu = mat.default_nu;
+      }
+      if (!GRANULAR_LAYER_TYPES.has(v)) updates.geogrid = null;
+      // Auto modulus: Eq. 7.1 (unbound granular) or Table 9.2 (bituminous).
+      if (!AUTO_E_TYPES.has(v) && !BIT_TYPES.has(v)) updates.auto_E = false;
+      return updates;
+    }));
+  };
+
+  // Collapsed-section summaries.
+  const sumLayers = `${nAll} layers · ${crustMin.toFixed(0)}${crustMax !== crustMin ? `–${crustMax.toFixed(0)}` : ''} mm crust${bitLayers.length ? ` · ${bitMin.toFixed(0)} mm bituminous` : ''}`;
+  const sumTraffic = `${designMsa.toFixed(1)} msa · R${reliabilityPercent} · ${Number(cvpd).toLocaleString('en-IN')} CVPD · ${designLife} yr`;
+  const sumMix = `${binderGrade} · ${temperature} °C${bundleE != null ? ` · bundle ${Number(bundleE).toFixed(0)} MPa` : ''}`;
+  const sumLoad = `CBR ${subgradeCbr}% · MRS ${mrsNow.toFixed(1)} MPa · ${isStdAxle ? 'standard axle' : 'non-standard load'}`;
+  const sumChecks = [longLife ? 'Long-life on' : 'Long-life off', ['thickness', optimizeByCost && 'cost', optimizeByCo2 && 'CO₂'].filter(Boolean).join(' + '), useCtbSpectrum && 'CTB spectrum'].filter(Boolean).join(' · ');
+  const sumPoints = `${autoPoints ? 'Auto' : 'Manual'} · ${points.length} point${points.length === 1 ? '' : 's'}${pointRoles.ok ? '' : ' · off the interfaces'}`;
+
+  // KPI helpers.
+  const ratioOf = (a, b) => (a != null && b ? Math.abs(Number(a)) / Number(b) : null);
+  const ratioT = shown.compressive ? null : ratioOf(shown.epsT, shown.allow?.epsT);
+  const ratioV = ratioOf(shown.epsV, shown.allow?.epsV);
+  const costParts = shown.rows.map((l, k) => ({ ...l, k: l.index ?? k, c: sectionCostCo2([{ type: l.name, h: l.h }], sanitizeMaterialRates(materialRates)).cost }));
+  const costSplit = shown.cost >= 1e7 ? [(shown.cost / 1e7).toFixed(2), 'Cr / km'] : [(shown.cost / 1e5).toFixed(1), 'lakh / km'];
+  const showingLabel = shown.kind === 'design' ? 'selected design' : shown.kind === 'evaluate' ? 'evaluated section' : 'trial section';
+  const colorOfName = (name, k) => (String(name).toLowerCase() === 'subgrade' ? '#7c6552' : getLayerColor({ type: name }, k, false));
+  const nDesigns = designs ? designs.length : 0;
+  const runButtons = (
+    <>
+      <button type="button" onClick={() => doSingleRun()} disabled={isSolving} aria-label="Evaluate"
+        title="Analyse the trial section at the analysis points (Ctrl+Enter)"
+        className="fp-tbtn h-10 justify-center text-[13.5px]">
+        {isSolving && !optimizationMode ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <Play size={15} aria-hidden="true" />}
+        Evaluate
+      </button>
+      <button type="button" onClick={doOptimize} disabled={isSolving} aria-label="Optimize"
+        title="Search constructable thicknesses for the IRC-adequate archetypes (Ctrl+Shift+Enter)"
+        className="fp-btn-grad h-10 rounded-[var(--radius-control)] text-[13.5px] font-bold inline-flex items-center justify-center gap-2 select-none">
+        {isSolving && optimizationMode ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={15} aria-hidden="true" />}
+        Optimize
+      </button>
+    </>
+  );
 
   return (
     <div className="min-h-[100svh] min-h-[100dvh] w-full text-[var(--text-main)] font-sans flex flex-col">
 
-      {/* APP BAR — identity, live design basis, run actions, project menu */}
-      <header className="sticky top-0 z-30 flex-none flex items-center gap-3 fp-glass-bar px-3 h-11">
-        <div className="flex items-center gap-2 min-w-0">
-          <img src={`${import.meta.env.BASE_URL}assets/logo_mark.png?v=3`} alt="" className="h-6 w-auto object-contain" />
-          <h1 className="m-0 text-[15px] font-extrabold tracking-tight text-[var(--text-bold)] whitespace-nowrap">IndoPave-37</h1>
+      {/* APP BAR — identity, live design basis, project menu */}
+      <header className="sticky top-0 z-30 flex-none flex items-center gap-3 fp-glass-bar px-4 h-14">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <img src={`${import.meta.env.BASE_URL}assets/logo_mark.png?v=3`} alt="" className="h-7 w-auto object-contain" />
+          <h1 className="m-0 text-[17px] font-extrabold tracking-tight text-[var(--text-bold)] whitespace-nowrap">IndoPave-37</h1>
           <span
-            className="hidden sm:inline text-[10px] text-[var(--text-muted)] cursor-help whitespace-nowrap"
+            className="hidden sm:inline text-[11.5px] text-[var(--text-muted)] cursor-help whitespace-nowrap"
             onDoubleClick={() => setDebugMode(!debugMode)}
             title="Double-click for debug mode"
           >
@@ -1734,7 +1970,7 @@ export default function App() {
         </div>
 
         {/* Live basis — the numbers every check is made against */}
-        <div className="hidden lg:flex items-center gap-1.5 min-w-0 overflow-hidden">
+        <div className="hidden 2xl:flex items-center gap-1.5 min-w-0 overflow-hidden">
           <Chip tone="info" title="Cumulative design traffic, IRC:37-2018 Eq. 4.5/4.6">
             <FlashValue value={designMsa.toFixed(1)} className="fp-num">{designMsa.toFixed(1)}</FlashValue>&nbsp;msa
           </Chip>
@@ -1746,26 +1982,23 @@ export default function App() {
 
         <div className="ml-auto flex items-center gap-1.5">
           <input type="file" ref={fileInputRef} onChange={handleImport} accept=".json" className="hidden"/>
+          {/* Narrow screens: the run actions (the rail foot has them from lg up) */}
           <button type="button" onClick={() => doSingleRun()} disabled={isSolving}
             title="Analyse the trial section at the analysis points (Ctrl+Enter)" aria-label="Evaluate"
-            className="fp-tbtn">
-            {isSolving && !optimizationMode ? <Loader2 size={12} className="animate-spin"/> : <Play size={12}/>}
-            <span className="hidden sm:inline">Evaluate</span>
+            className="fp-tbtn lg:hidden w-9 justify-center px-0">
+            {isSolving && !optimizationMode ? <Loader2 size={14} className="animate-spin"/> : <Play size={14}/>}
           </button>
           <button type="button" onClick={doOptimize} disabled={isSolving}
             title="Search constructable thicknesses for the IRC-adequate archetypes (Ctrl+Shift+Enter)" aria-label="Optimize"
-            className="fp-btn-grad h-[26px] px-3 rounded-md text-[11px] font-bold flex items-center gap-1.5 select-none">
-            {isSolving && optimizationMode ? <Loader2 size={12} className="animate-spin"/> : <ArrowRight size={12}/>}
-            <span className="hidden sm:inline">Optimize</span>
+            className="fp-btn-grad lg:hidden h-8 w-9 rounded-[var(--radius-control)] flex items-center justify-center select-none">
+            {isSolving && optimizationMode ? <Loader2 size={14} className="animate-spin"/> : <ArrowRight size={14}/>}
           </button>
 
-          <span className="hidden md:block w-px h-5 bg-[var(--hairline)] mx-0.5" aria-hidden="true" />
-
-          <div className="hidden md:flex items-center gap-1">
+          <div className="hidden md:flex items-center gap-1.5">
             <div className="relative" data-menu>
               <button type="button" className="fp-tbtn" aria-expanded={showDemos}
                 onClick={() => { setShowDemos(v => !v); setShowMoreMenu(false); }}>
-                <Database size={12}/> Use cases <ChevronDown size={11} aria-hidden="true"/>
+                <Database size={14}/> Use cases <ChevronDown size={13} aria-hidden="true"/>
               </button>
               {showDemos && (
                 <div className={menuPanel}>
@@ -1775,53 +2008,53 @@ export default function App() {
               )}
             </div>
             <button type="button" className="fp-tbtn" onClick={() => fileInputRef.current?.click()} title="Open a project file (.json)">
-              <Upload size={12}/> Import
+              <Upload size={14}/> <span className="hidden xl:inline">Import</span>
             </button>
             <button type="button" className="fp-tbtn" onClick={handleExport} title="Save the project as a .json file">
-              <Download size={12}/> Export
+              <Download size={14}/> <span className="hidden xl:inline">Export</span>
             </button>
             <button type="button" className="fp-tbtn" onClick={handlePdfExport}
               disabled={!optimizedDesigns || optimizedDesigns.length === 0}
               title={optimizedDesigns?.length ? 'Download the PDF design report' : 'Run Optimize first to generate a report'}>
-              <FileText size={12}/> PDF
+              <FileText size={14}/> PDF
             </button>
             <button type="button" className="fp-tbtn" onClick={() => setShowAdvanced(true)} title="Reserve meter, sensitivity, Monte Carlo, 3D strain bulbs, corridor">
-              <Zap size={12}/> Advanced
+              <Zap size={14}/> Advanced
             </button>
             <button type="button" className="fp-tbtn" onClick={() => setShowInstructions(true)} title="Usage guide">
-              <Info size={12}/> Help
+              <Info size={14}/> Help
             </button>
             <a className="fp-tbtn" href="https://law.resource.org/pub/in/bis/irc/irc.gov.in.037.2019.pdf"
                target="_blank" rel="noopener noreferrer" title="IRC:37 guideline (PDF)">
-              <Book size={12}/> IRC:37
+              <Book size={14}/> <span className="hidden xl:inline">IRC:37</span>
             </a>
           </div>
-          <button type="button" className="fp-tbtn w-[26px] justify-center px-0"
+          <button type="button" className="fp-tbtn w-8 justify-center px-0"
             onClick={() => setTheme(t => (t === 'dark' ? 'light' : 'dark'))}
             aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
             title={theme === 'dark' ? 'Slate Engineering (light)' : 'Antigravity (dark)'}>
-            {theme === 'dark' ? <Sun size={13}/> : <Moon size={13}/>}
+            {theme === 'dark' ? <Sun size={15}/> : <Moon size={15}/>}
           </button>
           <button type="button" className="fp-tbtn hidden md:inline-flex text-[var(--fail)]" onClick={handleReset} title="Clear the project (offers a JSON export first)">
-            <RotateCcw size={12}/> Reset
+            <RotateCcw size={14}/> <span className="hidden xl:inline">Reset</span>
           </button>
 
           {/* Narrow screens: one menu */}
           <div className="relative md:hidden" data-menu>
-            <button type="button" className="fp-tbtn w-[26px] justify-center px-0" aria-label="More actions"
+            <button type="button" className="fp-tbtn w-8 justify-center px-0" aria-label="More actions"
               aria-expanded={showMoreMenu} onClick={() => { setShowMoreMenu(v => !v); setShowDemos(false); }}>
-              <MoreHorizontal size={14} />
+              <MoreHorizontal size={16} />
             </button>
             {showMoreMenu && (
               <div className={menuPanel}>
                 <div className={menuHead}>Project</div>
-                <button type="button" className={menuItem} onClick={() => { fileInputRef.current?.click(); setShowMoreMenu(false); }}><Upload size={11}/> Import</button>
-                <button type="button" className={menuItem} onClick={() => { handleExport(); setShowMoreMenu(false); }}><Download size={11}/> Export</button>
-                <button type="button" className={menuItem} disabled={!optimizedDesigns?.length} onClick={() => { handlePdfExport(); setShowMoreMenu(false); }}><FileText size={11}/> PDF report</button>
-                <button type="button" className={menuItem} onClick={() => { setShowAdvanced(true); setShowMoreMenu(false); }}><Zap size={11}/> Advanced</button>
-                <button type="button" className={menuItem} onClick={() => { setShowInstructions(true); setShowMoreMenu(false); }}><Info size={11}/> Help</button>
-                <a className={menuItem} href="https://law.resource.org/pub/in/bis/irc/irc.gov.in.037.2019.pdf" target="_blank" rel="noopener noreferrer" onClick={() => setShowMoreMenu(false)}><Book size={11}/> IRC:37</a>
-                <button type="button" className={cn(menuItem, 'text-[var(--fail)]')} onClick={() => { setShowMoreMenu(false); handleReset(); }}><RotateCcw size={11}/> Reset</button>
+                <button type="button" className={menuItem} onClick={() => { fileInputRef.current?.click(); setShowMoreMenu(false); }}><Upload size={13}/> Import</button>
+                <button type="button" className={menuItem} onClick={() => { handleExport(); setShowMoreMenu(false); }}><Download size={13}/> Export</button>
+                <button type="button" className={menuItem} disabled={!optimizedDesigns?.length} onClick={() => { handlePdfExport(); setShowMoreMenu(false); }}><FileText size={13}/> PDF report</button>
+                <button type="button" className={menuItem} onClick={() => { setShowAdvanced(true); setShowMoreMenu(false); }}><Zap size={13}/> Advanced</button>
+                <button type="button" className={menuItem} onClick={() => { setShowInstructions(true); setShowMoreMenu(false); }}><Info size={13}/> Help</button>
+                <a className={menuItem} href="https://law.resource.org/pub/in/bis/irc/irc.gov.in.037.2019.pdf" target="_blank" rel="noopener noreferrer" onClick={() => setShowMoreMenu(false)}><Book size={13}/> IRC:37</a>
+                <button type="button" className={cn(menuItem, 'text-[var(--fail)]')} onClick={() => { setShowMoreMenu(false); handleReset(); }}><RotateCcw size={13}/> Reset</button>
                 <div className={cn(menuHead, 'border-t border-[var(--hairline)] mt-1 pt-1.5')}>Use cases</div>
                 {usesCases((c) => { handleApplyDemo(c); setShowMoreMenu(false); })}
               </div>
@@ -1830,811 +2063,796 @@ export default function App() {
         </div>
       </header>
 
-      {/* Auto-save restore notice — the pre-filled values are the user's own
-          last session, not arbitrary defaults; say so once, dismissibly. */}
-      {restoredNotice && (
-        <div className="px-2 pt-2">
-          <Notice tone="info" title="Session restored" onDismiss={() => setRestoredNotice(false)}>
-            These inputs and results are your last session, auto-saved in this
-            browser. Use <b>Reset</b> for a fresh project (it offers a JSON export first) or <b>Export</b> to file this one.
-          </Notice>
-        </div>
-      )}
+      <div className="fp-shell flex-1">
 
-      {/* ═══ BENTO WORKSPACE ═══ */}
-      <main
-        className="fp-bento flex-1 grid-cols-1 md:grid-cols-2 xl:[grid-template-columns:repeat(3,minmax(0,1fr))_var(--section-w)] grid-flow-row-dense items-start"
-        style={{ '--section-w': `${sectionW}px` }}
-      >
+        {/* ═══ INPUT RAIL ═══ */}
+        <aside className="fp-rail" aria-label="Design inputs">
+          <div className="fp-rail-scroll">
 
-        {/* ── Layer structure ── */}
-        <Tile
-          id="tile-layers" title="Layer structure" icon={Layers}
-          className="md:col-span-2 xl:col-span-3"
-          bodyClassName="p-0"
-          actions={<>
-            <Chip tone="muted" title="Total crust (Evaluate thickness: fixed, else minimum) and bituminous bundle">
-              <span className="fp-num">{crustMin.toFixed(0)}{crustMax !== crustMin ? `–${crustMax.toFixed(0)}` : ''}</span>&nbsp;mm crust
-              {bitLayers.length > 0 && <> · <span className="fp-num">{bitMin.toFixed(0)}</span>&nbsp;mm bit.</>}
-            </Chip>
-            {stackHasCtb && (
-              <Toggle id="sami" checked={hasSami} onChange={setHasSami} label="SAMI over CTB"
-                title="IRC:37-2018 §8.3: a stress-absorbing membrane interlayer as the crack-relief treatment. It is not a structural layer, so the bituminous layer sits directly on the CTB in the analysis. Without it, an aggregate crack-relief layer (100 mm WMM/CRL) must sit above the CTB." />
-            )}
-            <label className="text-[10px] text-[var(--text-muted)]" htmlFor="numLayers">Layers</label>
-            <select id="numLayers" value={numLayers} onChange={e=>setNumLayers(parseInt(e.target.value))}
-              className={cn(inp, 'w-12 font-bold cursor-pointer py-0')}>
-              {[2,3,4,5,6,7,8,9,10].map(n=><option key={n} value={n}>{n}</option>)}
-            </select>
-          </>}
-        >
-          <div className="overflow-x-auto">
-          <table className="fp-rt text-[11px] border-collapse" style={{ width: layerRT.total }}>
-            <colgroup>{layerRT.cols.map((w,k)=><col key={k} style={{width:w}}/>)}</colgroup>
-            <thead>
-              <tr className="text-[10px] text-[var(--text-muted)] font-semibold border-b border-[var(--hairline)]">
-                <th className="relative text-left py-1.5 px-2">Layer<ColGrip rt={layerRT} i={0}/></th>
-                <th className="relative text-left py-1.5 px-1.5">Material<ColGrip rt={layerRT} i={1}/></th>
-                <th className="relative text-center py-1.5 px-1">Mode<ColGrip rt={layerRT} i={2}/></th>
-                <th className="relative text-left py-1.5 px-1.5">E (MPa)<ColGrip rt={layerRT} i={3}/></th>
-                <th className="relative text-left py-1.5 px-1.5">ν<ColGrip rt={layerRT} i={4}/></th>
-                <th className="relative text-left py-1.5 px-1.5">Thickness (mm)<ColGrip rt={layerRT} i={5}/></th>
-                <th className="relative text-left py-1.5 px-1.5">IRC minimum<ColGrip rt={layerRT} i={6}/></th>
-              </tr>
-            </thead>
-            <tbody>
-              {layers.map((l,i)=>{
-                const sub = i===layers.length-1;
-                const hasGeogrid = !sub && !!l.geogrid && l.geogrid !== 'none';
-                const t = layerType(l);
-                const isBit = BIT_TYPES.has(t);
-                const canAuto = !sub && (AUTO_E_TYPES.has(t) || isBit);
-                const analysedE = analysisLayers[i]?.E;
-                const bundleNote = !sub && isBit && Number(analysedE) !== Number(l.E);
-                return (
-                  <tr key={i}
-                    className={cn("border-b border-[var(--hairline)] transition-colors", hoverLayer === i ? "bg-[var(--accent-soft)]" : "hover:bg-[var(--surface-sunken)]")}
-                    style={layerRT.rowH[i]?{height:layerRT.rowH[i]}:undefined}
-                    onMouseEnter={() => setHoverLayer(i)} onMouseLeave={() => setHoverLayer(null)}>
-                    {/* Layer — positional identity, colour-linked to the cross-section */}
-                    <td className="relative py-1 px-2 font-semibold text-[var(--text-main)] align-top whitespace-nowrap">
-                      <span className="inline-block w-2.5 h-2.5 rounded-sm mr-1.5 align-[-1px] border border-[var(--hairline-strong)]" style={{ background: getLayerColor(l, i, sub) }} aria-hidden="true" />
-                      {sub ? 'Subgrade' : `Layer ${i+1}`}
-                      <RowGrip rt={layerRT} rowKey={i} getHeight={()=>layerRT.rowH[i]||0}/>
-                    </td>
-                    {/* Material — optional classification */}
-                    <td className="py-1 px-1.5 align-top">
-                      {!sub ? (
-                        <>
-                          <select
-                            value={t}
-                            aria-label={`Layer ${i+1} material`}
-                            onChange={e=>{
-                              const v = e.target.value;
-                              setLayers(prev => prev.map((layer, j) => {
-                                if (j !== i) return layer;
-                                const updates = { ...layer, type: v };
-                                // Auto-fill E and ν only when the current values
-                                // match the *previous* material's defaults (meaning
-                                // user hasn't customised them) or when switching
-                                // from "— none —".  This keeps auto-fill optional.
-                                if (v && MATERIAL_DATABASE[v]) {
-                                  const mat = MATERIAL_DATABASE[v];
-                                  const prevType = layerType(layer);
-                                  const prevMat = prevType && MATERIAL_DATABASE[prevType];
-                                  const ePristine = !prevMat || layer.E === prevMat.default_E;
-                                  const nuPristine = !prevMat || layer.nu === prevMat.default_nu;
-                                  if (ePristine) updates.E = mat.default_E;
-                                  if (nuPristine) updates.nu = mat.default_nu;
-                                }
-                                if (!GRANULAR_LAYER_TYPES.has(v)) updates.geogrid = null;
-                                // Auto modulus: Eq. 7.1 (unbound granular) or Table 9.2 (bituminous).
-                                if (!AUTO_E_TYPES.has(v) && !BIT_TYPES.has(v)) updates.auto_E = false;
-                                return updates;
-                              }));
-                            }}
+            {/* ① Pavement layers */}
+            <RailSection id="layers" num={1} title="Pavement layers" summary={sumLayers} defaultOpen
+              actions={<>
+                <label className="text-[12.5px] text-[var(--text-muted)]" htmlFor="numLayers">Layers incl. subgrade</label>
+                <select id="numLayers" value={numLayers} onChange={e=>setNumLayers(parseInt(e.target.value))}
+                  className={cn(inp, 'w-16 font-bold cursor-pointer')}>
+                  {[2,3,4,5,6,7,8,9,10].map(n=><option key={n} value={n}>{n}</option>)}
+                </select>
+                <span className="ml-auto fp-num text-[12.5px] text-[var(--text-muted)]" title="Total crust (Evaluate thickness: fixed, else minimum)">
+                  <b className="text-[var(--text-bold)]">{crustMin.toFixed(0)}{crustMax !== crustMin ? `–${crustMax.toFixed(0)}` : ''}</b> mm
+                </span>
+              </>}>
+              <div className="flex flex-col gap-2" id="tile-layers">
+                {layers.map((l, i) => {
+                  const sub = i === layers.length - 1;
+                  const hasGeogrid = !sub && !!l.geogrid && l.geogrid !== 'none';
+                  const t = layerType(l);
+                  const isBit = BIT_TYPES.has(t);
+                  const canAuto = !sub && (AUTO_E_TYPES.has(t) || isBit);
+                  const analysedE = analysisLayers[i]?.E;
+                  const bundleNote = !sub && isBit && Number(analysedE) !== Number(l.E);
+                  const open = openLayer === i;
+                  const eTitle = sub ? "Determined by the subgrade CBR (④ Subgrade · load)"
+                    : (l.auto_E && isBit) ? `Auto — IRC:37-2018 Table 9.2, ${binderGrade} at ${temperature} °C${t === 'BM' ? ' (BM: fixed 35 °C value)' : ''}`
+                    : l.auto_E ? "Auto — derived from IRC:37-2018 Eq. 7.1 (0.2·h^0.45·E_support); the optimizer re-derives it for every candidate thickness"
+                      + (hasGeogrid ? ". Shown value includes the SP:59 geogrid MIF." : "")
+                    : hasGeogrid ? "Pinned E on a geogrid layer is the unreinforced modulus; the SP:59 MIF is applied on top."
+                    : isBit ? "Pinned (tested) modulus. IRC §9.2: the design value is the smaller of the tested value and Table 9.2."
+                    : "";
+                  return (
+                    <div key={i} data-layer={i}
+                      className={cn('fp-layer', hoverLayer === i && 'fp-layer-hot')}
+                      onMouseEnter={() => setHoverLayer(i)} onMouseLeave={() => setHoverLayer(null)}>
+                      <div className="flex items-center gap-2">
+                        <span className="fp-layer-sw fp-ink" style={{ background: getLayerColor(l, i, sub) }} aria-hidden="true" />
+                        <span className="fp-num text-[12px] font-bold text-[var(--text-muted)] w-4 text-center">{sub ? '∞' : i + 1}</span>
+                        {!sub ? (
+                          <select value={t} aria-label={`Layer ${i+1} material`} onChange={e => setLayerMaterial(i, e.target.value)}
                             title="Select material — auto-fills E and ν from IRC:37-2018 (optional, won't overwrite custom values)"
-                            className={cn(inp, "w-full font-semibold cursor-pointer font-sans")}>
+                            className={selIn('font-semibold flex-1')}>
                             <option value="">— none —</option>
                             {LAYER_TYPE_OPTIONS.map(tt => {
                               const m = MATERIAL_DATABASE[tt];
-                              return <option key={tt} value={tt}>{m.name} ({tt})</option>;
+                              return <option key={tt} value={tt}>{tt} · {m.name}</option>;
                             })}
                           </select>
-                          {GRANULAR_LAYER_TYPES.has(t) && (
-                            <select
-                              value={l.geogrid || 'none'}
-                              aria-label={`Layer ${i+1} geogrid`}
-                              onChange={e=>updateLayer(i,'geogrid', e.target.value==='none'?null:e.target.value)}
-                              title="Geosynthetic reinforcement (IRC:SP:59 / MIF) — uplifts granular modulus to trim thickness"
-                              className={cn(
-                                "mt-1 border rounded-md px-1.5 py-0.5 text-[9.5px] font-bold outline-none cursor-pointer w-full transition-colors",
-                                l.geogrid ? "text-emerald-700 bg-emerald-50 border-emerald-300" : "text-slate-400 bg-slate-50 border-slate-200 hover:border-emerald-300"
-                              )}>
-                              {GEOGRID_OPTIONS.map(g=><option key={g.id} value={g.id}>{g.id==='none'?'⊘ no geogrid':`▦ ${g.label}`}</option>)}
-                            </select>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-[10px] text-[var(--text-muted)]">From CBR {subgradeCbr}% (Eq. 6.{Number(subgradeCbr) <= 5 ? 1 : 2})</span>
-                      )}
-                    </td>
-                    <td className="py-1 px-1 text-center align-top">
+                        ) : (
+                          <span className="flex-1 text-[13.5px] font-semibold text-[var(--text-bold)]">Subgrade</span>
+                        )}
+                        {!sub && (
+                          <button type="button" onClick={() => setLayerMode(i)} aria-pressed={!l.is_fixed}
+                            title={l.is_fixed ? 'Fixed thickness — click to let the optimizer vary it within a range' : 'Optimized within min–max — click to fix it'}
+                            className={cn('fp-mode', l.is_fixed ? 'fp-mode-fixed' : 'fp-mode-opt')}>
+                            {l.is_fixed ? 'Fixed' : 'Opt'}
+                          </button>
+                        )}
+                        {!sub && (
+                          <button type="button" className="fp-icon-btn" aria-expanded={open} aria-label={`Layer ${i+1} details`}
+                            title="Poisson ratio, auto modulus, geogrid" onClick={() => setOpenLayer(o => (o === i ? null : i))}>
+                            <ChevronDown size={15} className={cn('transition-transform', open && 'rotate-180')} aria-hidden="true" />
+                          </button>
+                        )}
+                      </div>
                       {!sub ? (
-                        <button type="button" onClick={() => {
-                          const nextFixed = !l.is_fixed;
-                          setLayers(prev => prev.map((layer, j) => {
-                            if (j !== i) return layer;
-                            const updates = { ...layer, is_fixed: nextFixed };
-                            if (!nextFixed) {
-                              const type = layerType(layer) || layer.type || '';
-                              if (updates.min_h === undefined || updates.min_h === null || updates.min_h === 0) {
-                                updates.min_h = type === 'BC' ? 30 :
-                                                type === 'DBM' ? 50 : 150;
-                              }
-                              if (updates.max_h === undefined || updates.max_h === null || updates.max_h === 0) {
-                                updates.max_h = type === 'BC' ? 80 :
-                                                type === 'DBM' ? 250 : 300;
-                              }
-                            }
-                            return updates;
-                          }));
-                        }}
-                          aria-pressed={!l.is_fixed}
-                          title={l.is_fixed ? 'Fixed thickness — click to let the optimizer vary it within a range' : 'Optimized within min–max — click to fix it'}
-                          className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded border min-w-[40px]",
-                            l.is_fixed?"text-teal-700 bg-teal-50 border-teal-200":"text-orange-700 bg-orange-50 border-orange-200")}>
-                          {l.is_fixed?'Fixed':'Opt'}
-                        </button>
-                      ):<span className="text-[10px] text-[var(--text-muted)]">∞</span>}
-                    </td>
-                    <td className="py-1 px-1 align-top">
-                      <input
-                        type="number"
-                        value={l.E}
-                        aria-label={sub ? 'Subgrade modulus' : `Layer ${i+1} modulus`}
-                        onChange={e=>updateLayer(i,'E',Number(e.target.value))}
-                        disabled={sub || !!l.auto_E}
-                        title={sub ? "Determined by the subgrade CBR (Load · subgrade tile)"
-                          : (l.auto_E && isBit) ? `Auto — IRC:37-2018 Table 9.2, ${binderGrade} at ${temperature} °C${t === 'BM' ? ' (BM: fixed 35 °C value)' : ''}`
-                          : l.auto_E ? "Auto — derived from IRC:37-2018 Eq. 7.1 (0.2·h^0.45·E_support); the optimizer re-derives it for every candidate thickness"
-                            + (hasGeogrid ? ". Shown value includes the SP:59 geogrid MIF." : "")
-                          : hasGeogrid ? "Pinned E on a geogrid layer is the unreinforced modulus; the SP:59 MIF is applied on top."
-                          : isBit ? "Pinned (tested) modulus. IRC §9.2: the design value is the smaller of the tested value and Table 9.2."
-                          : ""}
-                        className={numIn((sub || l.auto_E) && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
-                      />
-                      {!sub && !l.auto_E && hasGeogrid && (
-                        <div className="mt-0.5 text-[8.5px] leading-tight text-emerald-700"
-                             title="Pinned E on a geogrid layer is the unreinforced modulus; the SP:59 MIF is applied on top.">
-                          unreinforced E · MIF on top
+                        <div className="grid grid-cols-[minmax(0,1fr)_104px] gap-2 mt-2 pl-[34px]">
+                          {l.is_fixed
+                            ? unitIn('mm', <input type="number" aria-label={`Layer ${i+1} thickness`} value={l.fixed_h} onChange={e=>updateLayer(i,'fixed_h',Number(e.target.value))} className={numIn()}/>)
+                            : <div className="flex gap-1 items-center min-w-0">
+                                <input type="number" aria-label={`Layer ${i+1} minimum thickness`} value={l.min_h} onChange={e=>updateLayer(i,'min_h',Number(e.target.value))} className={numIn("flex-1 px-1.5")} placeholder="min"/>
+                                <span className="text-[var(--text-muted)] text-[12px]">–</span>
+                                <input type="number" aria-label={`Layer ${i+1} maximum thickness`} value={l.max_h} onChange={e=>updateLayer(i,'max_h',Number(e.target.value))} className={numIn("flex-1 px-1.5")} placeholder="max"/>
+                                <span className="text-[var(--text-muted)] text-[11.5px]">mm</span>
+                              </div>}
+                          {unitIn('MPa', <input type="number" value={l.E} aria-label={`Layer ${i+1} modulus`} title={eTitle}
+                            onChange={e=>updateLayer(i,'E',Number(e.target.value))} disabled={!!l.auto_E}
+                            className={numIn(l.auto_E && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}/>)}
+                        </div>
+                      ) : (
+                        <div className="mt-1.5 pl-[34px] text-[12.5px] text-[var(--text-muted)] fp-num">
+                          From CBR {subgradeCbr}% (Eq. 6.{Number(subgradeCbr) <= 5 ? 1 : 2}) · M<sub>RS</sub> <b className="text-[var(--text-bold)]">{mrsNow.toFixed(1)}</b> MPa · ν {l.nu}
                         </div>
                       )}
-                      {bundleNote && (
-                        <div className="mt-0.5 text-[8.5px] leading-tight text-[var(--info)] fp-num"
-                             title="IRC:37-2018 §9.2: all bituminous layers are analysed as one layer with the modulus of the bottom mix.">
-                          analysed at {Number(analysedE).toFixed(0)} (bottom mix)
+                      {!sub && (
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1.5 pl-[34px]">
+                          {ircMinOf(l, i) && ircMinChip(l, i)}
+                          {canAuto && (
+                            <button type="button" className={cn('fp-chip cursor-pointer', l.auto_E ? 'fp-chip-info' : 'fp-chip-muted')}
+                              aria-pressed={!!l.auto_E} onClick={() => setAutoE(i, !l.auto_E)}
+                              title={isBit
+                                ? "Auto: take E from IRC:37-2018 Table 9.2 for the binder grade and pavement temperature (③ Bituminous mix). Switch off to pin a tested modulus."
+                                : "Auto: derive this granular modulus from IRC:37-2018 Eq. 7.1 (and the §7.2.3 composite rule). Recommended — a pinned E stays constant while the optimizer varies the thickness, which deviates from IRC."}>
+                              {l.auto_E ? '✓ ' : ''}{isBit ? 'Auto T 9.2' : 'Auto Eq. 7.1'}
+                            </button>
+                          )}
+                          {hasGeogrid && <Chip tone="ok" title="Geosynthetic reinforcement (IRC:SP:59 MIF)">▦ geogrid</Chip>}
+                          {bundleNote && (
+                            <span className="text-[11.5px] text-[var(--info)] fp-num" title="IRC:37-2018 §9.2: all bituminous layers are analysed as one layer with the modulus of the bottom mix.">
+                              analysed at {Number(analysedE).toFixed(0)} MPa
+                            </span>
+                          )}
+                          {!l.auto_E && hasGeogrid && (
+                            <span className="text-[11.5px] text-emerald-700" title="Pinned E on a geogrid layer is the unreinforced modulus; the SP:59 MIF is applied on top.">unreinforced E · MIF on top</span>
+                          )}
                         </div>
                       )}
-                      {canAuto && (
-                        <label
-                          className="mt-0.5 flex items-center gap-1 cursor-pointer select-none"
-                          title={isBit
-                            ? "Auto: take E from IRC:37-2018 Table 9.2 for the binder grade and pavement temperature (Bituminous mix · climate tile). Untick to pin a tested modulus."
-                            : "Auto: derive this granular modulus from IRC:37-2018 Eq. 7.1 (and the §7.2.3 composite rule). Recommended — a pinned E stays constant while the optimizer varies the thickness, which deviates from IRC."}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={!!l.auto_E}
-                            onChange={e=>{
-                              const checked = e.target.checked;
-                              setLayers(prev => prev.map((layer, j) => {
-                                if (j !== i) return layer;
-                                const updates = { ...layer, auto_E: checked };
-                                // Auto -> pinned on a geogrid layer: the auto E
-                                // already includes the MIF (computeGranularAutoE),
-                                // but a pinned E is the UNREINFORCED modulus that
-                                // gets the MIF on top. Store E / MIF (same getMif
-                                // call and subgrade MRS as computeGranularAutoE)
-                                // so the MIF is not applied twice. Only when the
-                                // shown E really is the engine's reinforced value:
-                                // after a failed or still-pending computation it is
-                                // not, and dividing would silently cancel the MIF.
-                                const engine = engineGranularE.find(x => x.index === j);
-                                const shownIsReinforced = !autoEError && engine && engine.auto
-                                  && Math.abs(Number(layer.E) - engine.E) <= 0.05;
-                                if (layer.auto_E && !checked && layer.geogrid && layer.geogrid !== 'none' && shownIsReinforced) {
-                                  const mif = getMif(subgradeModulusFromCBR(subgradeCbr), layer.geogrid);
-                                  const curE = Number(layer.E);
-                                  if (mif > 0 && Number.isFinite(curE) && curE > 0) {
-                                    updates.E = Math.round((curE / mif) * 10) / 10;
-                                  }
-                                }
-                                return updates;
-                              }));
-                            }}
-                            className="h-2.5 w-2.5 accent-orange-600 cursor-pointer"
-                          />
-                          <span className={cn("text-[9px] font-bold uppercase", l.auto_E ? "text-orange-700" : "text-slate-400")}>
-                            {isBit ? 'Auto T. 9.2' : 'Auto Eq. 7.1'}
-                          </span>
-                        </label>
+                      {!sub && open && (
+                        <div className="mt-2 ml-[34px] p-2.5 rounded-[var(--radius-control)] bg-[var(--surface-sunken)] border border-[var(--hairline)] flex flex-col gap-2 fp-fade-up">
+                          <Field label="Poisson ν" htmlFor={`nu-${i}`} className="grid-cols-[84px_minmax(0,1fr)]">
+                            <input id={`nu-${i}`} type="number" value={l.nu} step="0.01" onChange={e=>updateLayer(i,'nu',Number(e.target.value))} className={numIn()} />
+                          </Field>
+                          {GRANULAR_LAYER_TYPES.has(t) && (
+                            <Field label="Geogrid" htmlFor={`gg-${i}`} className="grid-cols-[84px_minmax(0,1fr)]"
+                              title="Geosynthetic reinforcement (IRC:SP:59 / MIF) — uplifts granular modulus to trim thickness">
+                              <select id={`gg-${i}`} value={l.geogrid || 'none'}
+                                onChange={e=>updateLayer(i,'geogrid', e.target.value==='none'?null:e.target.value)}
+                                className={selIn()}>
+                                {GEOGRID_OPTIONS.map(g=><option key={g.id} value={g.id}>{g.id==='none'?'No geogrid':g.label}</option>)}
+                              </select>
+                            </Field>
+                          )}
+                          {canAuto && (
+                            <Toggle id={`auto-${i}`} checked={!!l.auto_E} onChange={(c) => setAutoE(i, c)}
+                              label={isBit ? 'Modulus from Table 9.2' : 'Modulus from Eq. 7.1'} />
+                          )}
+                        </div>
                       )}
-                    </td>
-                    <td className="py-1 px-1 align-top">
-                      <input
-                        type="number"
-                        value={l.nu}
-                        aria-label={sub ? 'Subgrade Poisson ratio' : `Layer ${i+1} Poisson ratio`}
-                        onChange={e=>updateLayer(i,'nu',Number(e.target.value))}
-                        step="0.01"
-                        disabled={sub}
-                        title={sub ? "Fixed to 0.35 for Subgrade" : ""}
-                        className={numIn(sub && "bg-gray-100 text-gray-500 cursor-not-allowed font-medium")}
-                      />
-                    </td>
-                    <td className="py-1 px-1.5 align-top">
-                      {sub ? <span className="text-[var(--text-muted)] text-[11px]">∞ half-space</span>
-                      : l.is_fixed ? <input type="number" aria-label={`Layer ${i+1} thickness`} value={l.fixed_h} onChange={e=>updateLayer(i,'fixed_h',Number(e.target.value))} className={numIn()}/>
-                      : <div className="flex gap-1 items-center">
-                          <input type="number" aria-label={`Layer ${i+1} minimum thickness`} value={l.min_h} onChange={e=>updateLayer(i,'min_h',Number(e.target.value))} className={numIn("flex-1")} placeholder="min"/>
-                          <span className="text-[var(--text-muted)] text-xs">–</span>
-                          <input type="number" aria-label={`Layer ${i+1} maximum thickness`} value={l.max_h} onChange={e=>updateLayer(i,'max_h',Number(e.target.value))} className={numIn("flex-1")} placeholder="max"/>
-                        </div>}
-                    </td>
-                    <td className="py-1 px-1.5 align-top">{sub ? <span className="text-[10px] text-[var(--text-muted)]">—</span> : ircMinChip(l, i)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>
-        </Tile>
+                    </div>
+                  );
+                })}
+                {stackHasCtb && (
+                  <div className="pt-1">
+                    <Toggle id="sami" checked={hasSami} onChange={setHasSami} label="SAMI over the CTB (§8.3)"
+                      title="IRC:37-2018 §8.3: a stress-absorbing membrane interlayer as the crack-relief treatment. It is not a structural layer, so the bituminous layer sits directly on the CTB in the analysis. Without it, an aggregate crack-relief layer (100 mm WMM/CRL) must sit above the CTB." />
+                  </div>
+                )}
+              </div>
+            </RailSection>
 
-        {/* ── Cross-section (resizable at xl from its left edge) ── */}
-        <Tile
-          id="tile-section" title="Cross-section" icon={Ruler}
-          className="relative md:col-span-2 xl:col-span-1 xl:row-span-2 xl:self-stretch"
-          bodyClassName="p-1.5 flex items-center justify-center min-h-[320px]"
-          actions={<span className="text-[9.5px] text-[var(--text-muted)] fp-num">{wheelType === 'Dual' ? `dual · ${wheelSpacing} mm` : 'single wheel'}</span>}
-        >
-          <div
-            onPointerDown={onPreviewDrag}
-            onKeyDown={(e) => {
-              // Keyboard resize: the section grows to the left.
-              if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-                e.preventDefault();
-                const step = e.shiftKey ? 40 : 10;
-                setPreviewWidth(Math.max(320, Math.min(720, sectionW + (e.key === 'ArrowLeft' ? step : -step))));
-              }
-            }}
-            tabIndex={0}
-            className="hidden xl:block absolute -left-[7px] top-3 bottom-3 w-[10px] cursor-col-resize z-20 select-none touch-none group"
-            title="Drag (or focus and use ← →) to resize"
-            role="separator" aria-orientation="vertical" aria-label="Resize cross-section"
-            aria-valuenow={sectionW} aria-valuemin={320} aria-valuemax={720}
-          >
-            <span className="absolute left-[4px] top-1/2 -translate-y-1/2 h-10 w-[3px] rounded bg-[var(--hairline-strong)] group-hover:bg-[var(--accent)] group-active:bg-[var(--accent)] transition-colors" />
-          </div>
-          <PavementVisualizer
-            layers={layers}
-            points={points}
-            wheelType={wheelType}
-            wheelSpacing={wheelSpacing}
-            load={load}
-            pressure={pressure}
-            highlight={hoverLayer}
-            onHover={setHoverLayer}
-          />
-        </Tile>
+            {/* ② Traffic */}
+            <RailSection id="traffic" num={2} title="Traffic · design basis" summary={sumTraffic} defaultOpen>
+              <Field label="Road" htmlFor="road" title="Road category (IRC:37-2018 §3.7 and Eq. 3.5): Expressway / NH / SH / urban roads use 90% reliability and CTB RF = 1 at any traffic.">
+                <select id="road" value={roadCategory} onChange={e=>setRoadCategory(e.target.value)} className={selIn()}>
+                  {ROAD_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                </select>
+              </Field>
+              <Field label="Carriageway" htmlFor="cw" title="IRC:37-2018 §4.5.1 lateral distribution: sets the LDF. Divided carriageways take the CVPD of one direction (§4.6.1).">
+                <select id="cw" value={carriageway} onChange={e => {
+                  const c = CARRIAGEWAYS.find(x => x.id === e.target.value);
+                  setCarriageway(e.target.value);
+                  if (c) setLdf(c.ldf);
+                }} className={selIn()}>
+                  {CARRIAGEWAYS.map(c => <option key={c.id} value={c.id}>{c.label} — LDF {c.ldf}</option>)}
+                </select>
+              </Field>
+              <Field label={cwNow.directional ? 'CVPD / dir.' : 'CVPD 2-way'} htmlFor="cvpd"
+                title="Commercial vehicles per day at the last count (P in IRC Eq. 4.6). Directional volume for a divided carriageway, two-way volume otherwise (IRC:37-2018 §4.6.1); the LDF is applied to it.">
+                <input id="cvpd" type="number" value={cvpd} onChange={e=>setCvpd(Number(e.target.value))} className={numIn()}/>
+              </Field>
+              <div className="grid grid-cols-2 gap-x-3">
+                <Field label="Growth %" htmlFor="grw" className="grid-cols-[66px_minmax(0,1fr)]" title="Annual traffic growth rate, % (IRC:37-2018 §4.2.3: at least 5%).">
+                  <input id="grw" type="number" step="0.5" min="-5" max="20" value={Math.round(growthRate*1000)/10} onChange={e=>setGrowthRate(Number(e.target.value)/100)} className={numIn(growthRate < 0.05 && 'border-amber-400')}/>
+                </Field>
+                <Field label="Period yr" htmlFor="life" className="grid-cols-[66px_minmax(0,1fr)]" title={`Design period (IRC:37-2018 §4.3.1): ${recLife} years recommended for this road${recLife === 30 ? ' unless designed as a long-life pavement' : ''}.`}>
+                  <input id="life" type="number" step="1" min="1" max="40" value={designLife} onChange={e=>setDesignLife(Number(e.target.value))} className={numIn(designLife < recLife && !longLife && 'border-amber-400')}/>
+                </Field>
+              </div>
+              <Field label="VDF" htmlFor="vdf" title="Vehicle damage factor — standard axles per commercial vehicle. From an axle-load survey (IRC:37-2018 §4.4); Table 4.2 gives indicative values when no survey exists.">
+                <input id="vdf" type="number" step="0.1" min="0.1" max="12" value={vdf} onChange={e=>setVdf(Number(e.target.value))} className={numIn("w-[72px] flex-none")}/>
+                <button type="button"
+                  className="fp-tbtn h-[34px] px-2.5 text-[12px] min-w-0"
+                  aria-pressed={Number(vdf) === vdfSuggest}
+                  onClick={() => setVdf(vdfSuggest)}
+                  title={`IRC:37-2018 Table 4.2 indicative VDF for ${Math.round(initialTwoWay)} initial two-way CVPD (${terrain})${cwNow.directional ? ', taking the two-way volume as twice the directional CVPD' : ''}. Use only without an axle-load survey (§4.4.6).`}>
+                  Table 4.2: {vdfSuggest}
+                </button>
+              </Field>
+              {(designLife < recLife && !longLife) && (
+                <div className="text-[12px] text-[var(--warn)]">§4.3.1 recommends {recLife} years for this road{recLife === 30 ? ' (or a long-life design)' : ''}.</div>
+              )}
+              <More label="Opening year, LDF, terrain">
+                <Field label="Yrs to open" htmlFor="yrs" title="Years from the traffic count to completion of construction (x in IRC:37-2018 Eq. 4.6, A = P(1+r)^x). 0 if the CVPD is already the opening-year traffic.">
+                  <input id="yrs" type="number" step="0.5" min="0" max="30" value={constructionYears} onChange={e=>setConstructionYears(Math.max(0, Number(e.target.value)))} className={numIn()}/>
+                </Field>
+                <Field label="LDF" htmlFor="ldf" title="Lane distribution factor (IRC:37-2018 §4.5.1); set by the carriageway type, editable.">
+                  <input id="ldf" type="number" step="0.05" min="0.05" max="1" value={ldf} onChange={e=>setLdf(Number(e.target.value))} className={numIn(ldfIsCustom && 'border-amber-400')}/>
+                </Field>
+                <Field label="Terrain" title="Terrain for the Table 4.2 indicative VDF">
+                  <Seg label="Terrain" value={terrain} onChange={setTerrain}
+                    options={[{ id: 'plain', label: 'Plain', title: 'Rolling / plain terrain (Table 4.2)' }, { id: 'hilly', label: 'Hilly', title: 'Hilly terrain (Table 4.2)' }]} />
+                </Field>
+              </More>
+            </RailSection>
 
-        {/* ── Traffic & design basis ── */}
-        <Tile id="tile-traffic" title="Traffic · design basis" icon={Truck}
-          actions={<FlashValue value={designMsa.toFixed(1)} className="fp-num text-[11px] font-bold text-[var(--text-bold)] px-1 rounded">{designMsa.toFixed(1)} msa</FlashValue>}>
-          <div className="flex flex-col gap-1">
-            <Field label="Road" htmlFor="road" title="Road category (IRC:37-2018 §3.7 and Eq. 3.5): Expressway / NH / SH / urban roads use 90% reliability and CTB RF = 1 at any traffic.">
-              <select id="road" value={roadCategory} onChange={e=>setRoadCategory(e.target.value)} className={cn(inp, "w-full min-w-0 py-0.5 cursor-pointer font-sans")}>
-                {ROAD_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-              </select>
-            </Field>
-            <Field label="Carriageway" htmlFor="cw" title="IRC:37-2018 §4.5.1 lateral distribution: sets the LDF. Divided carriageways take the CVPD of one direction (§4.6.1).">
-              <select id="cw" value={carriageway} onChange={e => {
-                const c = CARRIAGEWAYS.find(x => x.id === e.target.value);
-                setCarriageway(e.target.value);
-                if (c) setLdf(c.ldf);
-              }} className={cn(inp, "w-full min-w-0 py-0.5 cursor-pointer font-sans")}>
-                {CARRIAGEWAYS.map(c => <option key={c.id} value={c.id}>{c.label} — LDF {c.ldf}</option>)}
-              </select>
-            </Field>
-            <Field label={cwNow.directional ? 'CVPD / dir.' : 'CVPD 2-way'} htmlFor="cvpd"
-              title="Commercial vehicles per day at the last count (P in IRC Eq. 4.6). Directional volume for a divided carriageway, two-way volume otherwise (IRC:37-2018 §4.6.1); the LDF is applied to it.">
-              <input id="cvpd" type="number" value={cvpd} onChange={e=>setCvpd(Number(e.target.value))} className={numIn()}/>
-            </Field>
-            <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-              <Field label="Growth %" htmlFor="grw" className="grid-cols-[52px_minmax(0,1fr)]" title="Annual traffic growth rate, % (IRC:37-2018 §4.2.3: at least 5%).">
-                <input id="grw" type="number" step="0.5" min="-5" max="20" value={Math.round(growthRate*1000)/10} onChange={e=>setGrowthRate(Number(e.target.value)/100)} className={numIn(growthRate < 0.05 && 'border-amber-400')}/>
+            {/* ③ Bituminous mix · climate */}
+            <RailSection id="mix" num={3} title="Bituminous mix · climate" summary={sumMix}>
+              <Field label="Binder" title="Binder of the bottom (DBM/BM) mix — IRC:37-2018 Table 9.2 row. VG10 is for snow-bound locations (§9.1). Modified binders are not recommended for DBM (§9.2).">
+                <Seg label="Binder grade" value={binderGrade} onChange={setBinderGrade}
+                  options={BINDER_GRADES.map(g => ({ id: g.id, label: g.id, title: g.label }))} />
               </Field>
-              <Field label="Yrs→open" htmlFor="yrs" className="grid-cols-[52px_minmax(0,1fr)]" title="Years from the traffic count to completion of construction (x in IRC:37-2018 Eq. 4.6, A = P(1+r)^x). 0 if the CVPD is already the opening-year traffic.">
-                <input id="yrs" type="number" step="0.5" min="0" max="30" value={constructionYears} onChange={e=>setConstructionYears(Math.max(0, Number(e.target.value)))} className={numIn()}/>
+              <Field label="Temp °C" htmlFor="temp" title="Average annual pavement temperature (IRC:37-2018 Table 9.2: 20–40 °C; about 35 °C in the plains of India).">
+                <input id="temp-range" type="range" min="20" max="40" step="1" value={temperature}
+                  onChange={e => setTemperature(Number(e.target.value))} aria-label="Pavement temperature"
+                  className="flex-1 min-w-0 accent-orange-600 cursor-pointer" />
+                <input id="temp" type="number" min="20" max="40" step="0.5" value={temperature}
+                  onChange={e => setTemperature(Math.min(40, Math.max(20, Number(e.target.value))))} className={numIn("w-16 flex-none")} />
               </Field>
-              <Field label="Life (yr)" htmlFor="life" className="grid-cols-[52px_minmax(0,1fr)]" title={`Design period (IRC:37-2018 §4.3.1): ${recLife} years recommended for this road${recLife === 30 ? ' unless designed as a long-life pavement' : ''}.`}>
-                <input id="life" type="number" step="1" min="1" max="40" value={designLife} onChange={e=>setDesignLife(Number(e.target.value))} className={numIn(designLife < recLife && !longLife && 'border-amber-400')}/>
-              </Field>
-              <Field label="LDF" htmlFor="ldf" className="grid-cols-[52px_minmax(0,1fr)]" title="Lane distribution factor (IRC:37-2018 §4.5.1); set by the carriageway type, editable.">
-                <input id="ldf" type="number" step="0.05" min="0.05" max="1" value={ldf} onChange={e=>setLdf(Number(e.target.value))} className={numIn(ldfIsCustom && 'border-amber-400')}/>
-              </Field>
-            </div>
-            <Field label="VDF" htmlFor="vdf" title="Vehicle damage factor — standard axles per commercial vehicle. From an axle-load survey (IRC:37-2018 §4.4); Table 4.2 gives indicative values when no survey exists.">
-              <input id="vdf" type="number" step="0.1" min="0.1" max="12" value={vdf} onChange={e=>setVdf(Number(e.target.value))} className={numIn("w-16 flex-none")}/>
-              <Seg label="Terrain" value={terrain} onChange={setTerrain}
-                options={[{ id: 'plain', label: 'Plain', title: 'Rolling / plain terrain (Table 4.2)' }, { id: 'hilly', label: 'Hilly', title: 'Hilly terrain (Table 4.2)' }]} />
-              <button type="button"
-                className="fp-tbtn h-[22px] px-1.5 text-[10px]"
-                aria-pressed={Number(vdf) === vdfSuggest}
-                onClick={() => setVdf(vdfSuggest)}
-                title={`IRC:37-2018 Table 4.2 indicative VDF for ${Math.round(initialTwoWay)} initial two-way CVPD (${terrain})${cwNow.directional ? ', taking the two-way volume as twice the directional CVPD' : ''}. Use only without an axle-load survey (§4.4.6).`}>
-                T 4.2: {vdfSuggest}
-              </button>
-            </Field>
-            {(designLife < recLife && !longLife) && (
-              <div className="text-[10px] text-[var(--warn)]">§4.3.1 recommends {recLife} years for this road{recLife === 30 ? ' (or a long-life design)' : ''}.</div>
-            )}
-          </div>
-        </Tile>
+              <div className="grid grid-cols-3 gap-2 rounded-[var(--radius-control)] bg-[var(--surface-sunken)] border border-[var(--hairline)] p-2.5">
+                <Kpi label="T 9.2" value={t92Now.toFixed(0)} sub={`MPa · ${binderGrade}`}
+                     title={`Indicative maximum resilient modulus of the bottom mix (IRC:37-2018 Table 9.2), ${binderGrade} at ${temperature} °C${bottomBitType === 'BM' ? ' (BM)' : ''}.`} />
+                <Kpi label="Bundle" value={bundleE != null ? Number(bundleE).toFixed(0) : '—'}
+                     tone={bundleE != null && bundleE > t92Now + 0.5 ? 'warn' : undefined}
+                     sub={bundleE == null ? 'no bit. layer' : bundleE > t92Now + 0.5 ? 'above T 9.2' : 'MPa · §9.2'}
+                     title="Modulus the whole bituminous bundle is analysed with: the bottom mix (IRC:37-2018 §9.2). It may not exceed Table 9.2." />
+                <Kpi label="C" value={cFactor.toFixed(2)} sub="Eq. 3.3/3.4"
+                     title="C = 10^(4.84 (Vbe/(Va+Vbe) − 0.69)), IRC:37-2018 §3.6.2." />
+              </div>
+              <More label="Air voids, bitumen volume">
+                <Field label="Va %" htmlFor="va" title="Air voids of the bottom bituminous mix (IRC:37-2018 §3.6.2 fatigue C-factor). Annex II uses 3%.">
+                  <input id="va" type="number" step="0.5" min="1" max="12" value={airVoids} onChange={e=>setAirVoids(Number(e.target.value))} className={numIn()}/>
+                </Field>
+                <Field label="Vbe %" htmlFor="vbe" title="Effective bitumen volume of the bottom bituminous mix (IRC:37-2018 §3.6.2). Annex II uses 11.5%.">
+                  <input id="vbe" type="number" step="0.5" min="5" max="20" value={bitumenVolume} onChange={e=>setBitumenVolume(Number(e.target.value))} className={numIn()}/>
+                </Field>
+              </More>
+            </RailSection>
 
-        {/* ── Bituminous mix & climate (Table 9.2) ── */}
-        <Tile id="tile-mix" title="Bituminous mix · climate" icon={Thermometer}
-          actions={bundleE != null && <FlashValue value={bundleE} className="fp-num text-[11px] font-bold text-[var(--text-bold)] px-1 rounded">{Number(bundleE).toFixed(0)} MPa</FlashValue>}>
-          <div className="flex flex-col gap-1.5">
-            <Field label="Binder" title="Binder of the bottom (DBM/BM) mix — IRC:37-2018 Table 9.2 row. VG10 is for snow-bound locations (§9.1). Modified binders are not recommended for DBM (§9.2).">
-              <Seg label="Binder grade" value={binderGrade} onChange={setBinderGrade}
-                options={BINDER_GRADES.map(g => ({ id: g.id, label: g.id, title: g.label }))} />
-            </Field>
-            <Field label="Temp °C" htmlFor="temp" title="Average annual pavement temperature (IRC:37-2018 Table 9.2: 20–40 °C; about 35 °C in the plains of India).">
-              <input id="temp-range" type="range" min="20" max="40" step="1" value={temperature}
-                onChange={e => setTemperature(Number(e.target.value))} aria-label="Pavement temperature"
-                className="flex-1 min-w-0 accent-orange-600 cursor-pointer" />
-              <input id="temp" type="number" min="20" max="40" step="0.5" value={temperature}
-                onChange={e => setTemperature(Math.min(40, Math.max(20, Number(e.target.value))))} className={numIn("w-14 flex-none")} />
-            </Field>
-            <div className="grid grid-cols-2 gap-x-2">
-              <Field label="Va %" htmlFor="va" className="grid-cols-[40px_minmax(0,1fr)]" title="Air voids of the bottom bituminous mix (IRC:37-2018 §3.6.2 fatigue C-factor). Annex II uses 3%.">
-                <input id="va" type="number" step="0.5" min="1" max="12" value={airVoids} onChange={e=>setAirVoids(Number(e.target.value))} className={numIn()}/>
+            {/* ④ Subgrade · load */}
+            <RailSection id="load" num={4} title="Subgrade · load" summary={sumLoad}
+              actions={isStdAxle
+                ? <Chip tone="ok" title="IRC:37-2018 §3.6.1 standard axle: 80 kN dual-wheel single axle — 20 kN per wheel, 0.56 MPa, 310 mm spacing">IRC standard axle</Chip>
+                : <button type="button" className="fp-chip fp-chip-warn cursor-pointer" title="Restore the IRC:37-2018 standard axle (20 kN per wheel, 0.56 MPa, dual at 310 mm)"
+                    onClick={() => { setLoad(20000); setPressure(0.56); setWheelType('Dual'); setWheelSpacing(310); }}>Non-standard · reset</button>}>
+              <Field label="CBR %" htmlFor="cbr" title="Effective subgrade CBR (IRC:37-2018 §6.3); the resilient modulus follows Eq. 6.1 (≤ 5%) or Eq. 6.2.">
+                <input id="cbr" type="number" step="0.5" value={subgradeCbr} onChange={e=>setSubgradeCbr(Number(e.target.value))} className={numIn("w-[72px] flex-none")}/>
+                <span className="text-[12.5px] text-[var(--text-muted)] fp-num whitespace-nowrap">M<sub>RS</sub> <FlashValue value={mrsNow.toFixed(1)} className="font-semibold text-[var(--text-bold)] px-0.5 rounded">{mrsNow.toFixed(1)}</FlashValue> MPa</span>
               </Field>
-              <Field label="Vbe %" htmlFor="vbe" className="grid-cols-[40px_minmax(0,1fr)]" title="Effective bitumen volume of the bottom bituminous mix (IRC:37-2018 §3.6.2). Annex II uses 11.5%.">
-                <input id="vbe" type="number" step="0.5" min="5" max="20" value={bitumenVolume} onChange={e=>setBitumenVolume(Number(e.target.value))} className={numIn()}/>
-              </Field>
-            </div>
-            <div className="grid grid-cols-3 gap-2 pt-1.5 border-t border-[var(--hairline)]">
-              <Kpi label="Table 9.2" value={t92Now.toFixed(0)} unit="MPa" sub={`${binderGrade} · ${temperature} °C${bottomBitType === 'BM' ? ' · BM' : ''}`}
-                   title="Indicative maximum resilient modulus of the bottom mix (IRC:37-2018 Table 9.2)." />
-              <Kpi label="Bundle E" value={bundleE != null ? Number(bundleE).toFixed(0) : '—'} unit={bundleE != null ? 'MPa' : ''}
-                   tone={bundleE != null && bundleE > t92Now + 0.5 ? 'warn' : undefined}
-                   sub={bundleE == null ? 'no bituminous layer' : bundleE > t92Now + 0.5 ? 'above Table 9.2' : 'analysed (§9.2)'}
-                   title="Modulus the whole bituminous bundle is analysed with: the bottom mix (IRC:37-2018 §9.2). It may not exceed Table 9.2." />
-              <Kpi label="C factor" value={cFactor.toFixed(2)} sub="Eq. 3.3 / 3.4"
-                   title="C = 10^(4.84 (Vbe/(Va+Vbe) − 0.69)), IRC:37-2018 §3.6.2." />
-            </div>
-          </div>
-        </Tile>
+              <More label="Wheel load and spacing">
+                <Field label="Wheel" title="IRC:37-2018 §3.6.1 analyses a dual-wheel set; the optimizer always uses the dual set for the CTB spectrum.">
+                  <Seg label="Wheel type" value={wheelType} onChange={setWheelType}
+                    options={[{ id: 'Dual', label: 'Dual' }, { id: 'Single', label: 'Single' }]} />
+                </Field>
+                <Field label="Load (N)" htmlFor="load" title="Load per wheel (IRC standard: 20 000 N).">
+                  <input id="load" type="number" value={load} onChange={e=>setLoad(Number(e.target.value))} className={numIn()}/>
+                  <span className="text-[12px] text-[var(--text-muted)] fp-num whitespace-nowrap">{(Number(load)/1000).toFixed(1)} kN</span>
+                </Field>
+                <Field label="Tyre (MPa)" htmlFor="tyre" title="Contact pressure (IRC: 0.56 MPa; 0.80 MPa is used only for the CTB checks).">
+                  <input id="tyre" type="number" step="0.01" value={pressure} onChange={e=>setPressure(Number(e.target.value))} className={numIn()}/>
+                </Field>
+                <Field label="Spacing" htmlFor="sp" title="Centre-to-centre spacing of the dual wheels, mm (IRC: 310 mm).">
+                  {unitIn('mm c/c', <input id="sp" type="number" step="1" value={wheelSpacing} disabled={wheelType !== 'Dual'} onChange={e=>setWheelSpacing(Number(e.target.value))} className={numIn(cn('pr-14', wheelType !== 'Dual' && 'opacity-50'))} />)}
+                </Field>
+              </More>
+              {debugMode && (
+                <Field label="Debug" htmlFor="debugMode" className="text-[var(--fail)]">
+                  <input id="debugMode" type="checkbox" checked={debugMode} onChange={e=>setDebugMode(e.target.checked)} className="cursor-pointer" />
+                </Field>
+              )}
+            </RailSection>
 
-        {/* ── Load & subgrade ── */}
-        <Tile id="tile-load" title="Load · subgrade" icon={Gauge}
-          actions={isStdAxle
-            ? <Chip tone="ok" title="IRC:37-2018 §3.6.1 standard axle: 80 kN dual-wheel single axle — 20 kN per wheel, 0.56 MPa, 310 mm spacing">IRC standard axle</Chip>
-            : <button type="button" className="fp-chip fp-chip-warn cursor-pointer" title="Restore the IRC:37-2018 standard axle (20 kN per wheel, 0.56 MPa, dual at 310 mm)"
-                onClick={() => { setLoad(20000); setPressure(0.56); setWheelType('Dual'); setWheelSpacing(310); }}>Non-standard · reset</button>}>
-          <div className="flex flex-col gap-1">
-            <Field label="CBR %" htmlFor="cbr" title="Effective subgrade CBR (IRC:37-2018 §6.3); the resilient modulus follows Eq. 6.1 (≤ 5%) or Eq. 6.2.">
-              <input id="cbr" type="number" step="0.5" value={subgradeCbr} onChange={e=>setSubgradeCbr(Number(e.target.value))} className={numIn("w-16 flex-none")}/>
-              <span className="text-[10px] text-[var(--text-muted)] fp-num whitespace-nowrap">M<sub>RS</sub> <FlashValue value={mrsNow.toFixed(1)} className="font-semibold text-[var(--text-bold)] px-0.5 rounded">{mrsNow.toFixed(1)}</FlashValue> MPa</span>
-            </Field>
-            <Field label="Wheel" title="IRC:37-2018 §3.6.1 analyses a dual-wheel set; the optimizer always uses the dual set for the CTB spectrum.">
-              <Seg label="Wheel type" value={wheelType} onChange={setWheelType}
-                options={[{ id: 'Dual', label: 'Dual' }, { id: 'Single', label: 'Single' }]} />
-            </Field>
-            <Field label="Load (N)" htmlFor="load" title="Load per wheel (IRC standard: 20 000 N).">
-              <input id="load" type="number" value={load} onChange={e=>setLoad(Number(e.target.value))} className={numIn()}/>
-              <span className="text-[10px] text-[var(--text-muted)] fp-num whitespace-nowrap">{(Number(load)/1000).toFixed(1)} kN</span>
-            </Field>
-            <Field label="Tyre (MPa)" htmlFor="tyre" title="Contact pressure (IRC: 0.56 MPa; 0.80 MPa is used only for the CTB checks).">
-              <input id="tyre" type="number" step="0.01" value={pressure} onChange={e=>setPressure(Number(e.target.value))} className={numIn()}/>
-            </Field>
-            <Field label="Spacing" htmlFor="sp" title="Centre-to-centre spacing of the dual wheels, mm (IRC: 310 mm).">
-              <input id="sp" type="number" step="1" value={wheelSpacing} disabled={wheelType !== 'Dual'} onChange={e=>setWheelSpacing(Number(e.target.value))} className={numIn(wheelType !== 'Dual' && 'opacity-50')} />
-              <span className="text-[10px] text-[var(--text-muted)] whitespace-nowrap">mm c/c</span>
-            </Field>
-            {debugMode && (
-              <Field label="Debug" htmlFor="debugMode" className="text-[var(--fail)]">
-                <input id="debugMode" type="checkbox" checked={debugMode} onChange={e=>setDebugMode(e.target.checked)} className="cursor-pointer" />
-              </Field>
-            )}
-          </div>
-        </Tile>
-
-        {/* ── Design limits (allowable strains for this traffic) ── */}
-        <Tile id="tile-limits" title="Design limits" icon={ListChecks} className="md:col-span-2 xl:col-span-2"
-          actions={<span className="text-[9.5px] text-[var(--text-muted)]">IRC:37-2018 §3.6 · §10</span>}>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-2.5">
-            <Kpi label="Design traffic" value={designMsa.toFixed(1)} unit="msa"
-                 sub={`${Math.round(Number(cvpd) * Math.pow(1 + Number(growthRate), Number(constructionYears) || 0)).toLocaleString('en-IN')} CVPD · LDF ${ldf} · VDF ${vdf}`}
-                 title="N = 365 · A · LDF · VDF · ((1+r)^n − 1)/r, A = P(1+r)^x (IRC:37-2018 Eq. 4.5/4.6)" />
-            <Kpi label="Reliability" value={`R${reliabilityPercent}`}
-                 sub={`§3.7 · ${(ROAD_CATEGORIES.find(c => c.id === roadCategory) || {}).label || roadCategory}`}
-                 title="90% for Expressway / NH / SH / urban roads at any traffic and for other roads at ≥ 20 msa; else 80% (IRC:37-2018 §3.7)" />
-            <Kpi label={<>Allowable <span className="normal-case">εt</span></>} value={allowNow.epsT != null ? (allowNow.epsT * 1e6).toFixed(0) : '—'} unit={allowNow.epsT != null ? 'µε' : ''}
-                 sub={bundleE != null ? `Eq. 3.${reliabilityPercent === 90 ? 4 : 3} · MRm ${Number(bundleE).toFixed(0)} MPa` : 'no bituminous layer'}
-                 title="Bituminous tensile strain giving Nf = design traffic (IRC:37-2018 Eq. 3.3/3.4 solved for εt)." />
-            <Kpi label={<>Allowable <span className="normal-case">εv</span></>} value={allowNow.epsV != null ? (allowNow.epsV * 1e6).toFixed(0) : '—'} unit={allowNow.epsV != null ? 'µε' : ''}
-                 sub={`Eq. 3.${reliabilityPercent === 90 ? 2 : 1} · top of subgrade`}
-                 title="Subgrade vertical strain giving NR = design traffic (IRC:37-2018 Eq. 3.1/3.2 solved for εv)." />
-          </div>
-          <div className={cn("mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-2 py-1.5",
-                             longLife ? "border-[color-mix(in_oklab,var(--ok)_35%,transparent)] bg-[var(--ok-soft)]" : "border-[var(--hairline)] bg-[var(--surface-sunken)]")}>
-            <Toggle id="longlife" checked={longLife} onChange={setLongLife}
-              label={<span>Long-life pavement <span className="text-[var(--text-muted)]">(§10)</span></span>}
-              title="IRC:37-2018 §10 / Annex II.6: also keep the bituminous tensile strain ≤ 80 µε (endurance limit at 35 °C) and the subgrade strain ≤ 200 µε. Recommended from 300 msa and for expressways (§4.3.1)." />
-            <span className="text-[10.5px] fp-num text-[var(--text-main)]">εt ≤ {(LONG_LIFE_EPS_T * 1e6).toFixed(0)} µε · εv ≤ {(LONG_LIFE_EPS_V * 1e6).toFixed(0)} µε</span>
-            {llRecommended && !longLife && <Chip tone="warn" title="IRC:37-2018 §4.3.1: corridors over 300 msa and expressways should preferably be designed as long-life pavements (else for at least 30 years).">Recommended here</Chip>}
-            {longLife && temperature !== 35 && <Chip tone="info" title="IRC states the 80 µε endurance limit for 35 °C.">80 µε is the 35 °C value</Chip>}
-          </div>
-        </Tile>
-
-        {/* ── Optimizer objectives & checks ── */}
-        <Tile id="tile-objectives" title="Optimizer" icon={Settings}>
-          <div className="flex flex-col gap-2">
-            <div className="text-[9.5px] font-bold uppercase tracking-wide text-[var(--text-muted)]">Objectives</div>
-            <div className="flex flex-col gap-1.5">
+            {/* ⑤ Design checks & optimizer */}
+            <RailSection id="checks" num={5} title="Design checks · optimizer" summary={sumChecks}>
+              <div className={cn("flex flex-col gap-1.5 rounded-[var(--radius-control)] border p-2.5",
+                                 longLife ? "border-[color-mix(in_oklab,var(--ok)_35%,transparent)] bg-[var(--ok-soft)]" : "border-[var(--hairline)] bg-[var(--surface-sunken)]")}>
+                <Toggle id="longlife" checked={longLife} onChange={setLongLife}
+                  label={<span>Long-life pavement <span className="text-[var(--text-muted)]">(§10)</span></span>}
+                  title="IRC:37-2018 §10 / Annex II.6: also keep the bituminous tensile strain ≤ 80 µε (endurance limit at 35 °C) and the subgrade strain ≤ 200 µε. Recommended from 300 msa and for expressways (§4.3.1)." />
+                <span className="text-[12px] fp-num text-[var(--text-main)] pl-[46px]">εt ≤ {(LONG_LIFE_EPS_T * 1e6).toFixed(0)} µε · εv ≤ {(LONG_LIFE_EPS_V * 1e6).toFixed(0)} µε</span>
+                {(llRecommended && !longLife) || (longLife && temperature !== 35) ? (
+                  <div className="flex flex-wrap gap-1.5 pl-[46px]">
+                    {llRecommended && !longLife && <Chip tone="warn" title="IRC:37-2018 §4.3.1: corridors over 300 msa and expressways should preferably be designed as long-life pavements (else for at least 30 years).">Recommended here</Chip>}
+                    {longLife && temperature !== 35 && <Chip tone="info" title="IRC states the 80 µε endurance limit for 35 °C.">80 µε is the 35 °C value</Chip>}
+                  </div>
+                ) : null}
+              </div>
+              <div className="fp-kpi-label pt-1">Optimizer objectives</div>
               <Toggle id="optByThk" checked disabled label="Thickness (Structural)" title="Always ranked: the thinnest IRC-adequate section." />
               <Toggle id="optByCost" checked={optimizeByCost} onChange={setOptimizeByCost} label="Cost (Economy)" title="Adds the cheapest adequate design, from the material unit rates." />
               <Toggle id="optByCo2" checked={optimizeByCo2} onChange={setOptimizeByCo2} label="Embodied CO₂ (Sustainable)" title="Adds the lowest-carbon adequate design." />
-            </div>
-            <div className="flex flex-wrap gap-1 pt-1.5 border-t border-[var(--hairline)]">
-              <button type="button" className="fp-tbtn" aria-pressed={showRatesPanel} disabled={!optimizeByCost && !optimizeByCo2}
-                onClick={() => setShowRatesPanel(v => !v)} title={optimizeByCost || optimizeByCo2 ? 'Edit material unit rates' : 'Enable Cost or CO₂ to edit rates'}>
-                <IndianRupee size={12}/> Rates
-              </button>
-              <button type="button" className="fp-tbtn" aria-pressed={showCtbPanel}
-                onClick={() => setShowCtbPanel(v => !v)} title="CTB axle-load spectrum for the IRC:37-2018 Eq. 3.6 cumulative damage check">
-                <Activity size={12}/> CTB spectrum{useCtbSpectrum ? ' · on' : ''}
-              </button>
-            </div>
-          </div>
-        </Tile>
-
-        {/* ── Analysis points (Evaluate) ── */}
-        <Tile id="tile-points" title="Analysis points" icon={Crosshair}
-          actions={<>
-            <button type="button" className="fp-tbtn h-[22px]" onClick={placeIrcPoints}
-              title="Place the IRC critical points for this stack: bottom of the bituminous layer and of a CTB (just above), top of the subgrade (just below); r = 0 and between the duals.">
-              <Crosshair size={11}/> IRC points
-            </button>
-            <select value={numPoints} onChange={e=>setNumPoints(parseInt(e.target.value))} aria-label="Number of analysis points"
-              className={cn(inp, 'w-11 py-0 font-bold cursor-pointer')}>
-              {[1,2,3,4,5,6,7,8,9,10].map(n=><option key={n} value={n}>{n}</option>)}
-            </select>
-          </>}>
-          <div className="overflow-x-auto">
-          <table className="fp-rt text-[11px] border-collapse" style={{ width: pointsRT.total + 64 }}>
-            <colgroup>{pointsRT.cols.map((w,k)=><col key={k} style={{width:w}}/>)}<col style={{ width: 64 }}/></colgroup>
-            <thead>
-              <tr className="text-[10px] text-[var(--text-muted)] font-semibold">
-                <th className="relative text-left py-0.5">#<ColGrip rt={pointsRT} i={0}/></th>
-                <th className="relative text-left py-0.5">z (mm)<ColGrip rt={pointsRT} i={1}/></th>
-                <th className="relative text-left py-0.5">r (mm)<ColGrip rt={pointsRT} i={2}/></th>
-                <th className="text-left py-0.5 pl-1">Role</th>
-              </tr>
-            </thead>
-            <tbody>
-              {points.map((p,i)=>{
-                const role = pointRoleOf(i);
-                return (
-                  <tr key={i} style={pointsRT.rowH[i]?{height:pointsRT.rowH[i]}:undefined}>
-                    <td className="relative py-0.5 font-bold text-[var(--text-muted)] text-[10px] fp-num">P{i+1}<RowGrip rt={pointsRT} rowKey={i} getHeight={()=>pointsRT.rowH[i]||0}/></td>
-                    <td className="py-0.5 pr-1"><input type="number" aria-label={`Point ${i+1} depth`} value={p.z} onChange={e=>updatePoint(i,'z',Number(e.target.value))} className={numIn("py-0")}/></td>
-                    <td className="py-0.5"><input type="number" aria-label={`Point ${i+1} radius`} value={p.r} onChange={e=>updatePoint(i,'r',Number(e.target.value))} className={numIn("py-0")}/></td>
-                    <td className="py-0.5 pl-1">
-                      {role === 'fatigue' ? <Chip tone="info" title="Bottom of the bituminous layer: fatigue strain">εt</Chip>
-                        : role === 'rutting' ? <Chip tone="info" title="Top of the subgrade: rutting strain">εv</Chip>
-                        : role === 'ctb' ? <Chip tone="info" title="Bottom of the CTB: CTB fatigue (checked by Optimize at 0.80 MPa)">CTB</Chip>
-                        : <Chip tone="muted" title="Not at a critical interface of the current stack (±5 mm)">—</Chip>}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>
-          {!pointRoles.ok && (
-            <div className="mt-1.5 text-[10px] text-[var(--warn)]">
-              Points miss the critical interfaces of this stack — use <b>IRC points</b>.
-            </div>
-          )}
-        </Tile>
-
-        {/* ── Material rates (cost / CO₂ objectives) ── */}
-        {(optimizeByCost || optimizeByCo2) && showRatesPanel && (
-          <Tile id="tile-rates" title="Material rates" icon={IndianRupee} className="md:col-span-1 xl:col-span-2 fp-fade-up"
-            actions={<span className="text-[9.5px] text-[var(--text-muted)]">blank = IRC/MoRTH default</span>}>
-            <div className="grid grid-cols-[48px_repeat(2,minmax(0,1fr))] gap-x-2 gap-y-1 items-center">
-              <span />
-              <span className="text-[9.5px] font-semibold text-[var(--text-muted)]">{optimizeByCost ? '₹ / m³' : ''}</span>
-              <span className="text-[9.5px] font-semibold text-[var(--text-muted)]">{optimizeByCo2 ? 'kg CO₂ / m³' : ''}</span>
-              {Object.keys(materialRates).map((m) => (
-                <React.Fragment key={m}>
-                  <span className="text-[11px] font-bold text-[var(--text-main)]">{m}</span>
-                  {optimizeByCost ? <input type="number" step="1" aria-label={`${m} cost per cubic metre`} value={materialRates[m].cost_per_cum || ''} placeholder={DEFAULT_MATERIAL_RATES[m] ? `${DEFAULT_MATERIAL_RATES[m].cost_per_cum}` : 'default'} onChange={e=>updateMaterialRate(m,'cost_per_cum', Number(e.target.value))} className={numIn()} title="Blank = use the built-in IRC/MoRTH default rate"/> : <span />}
-                  {optimizeByCo2 ? <input type="number" step="1" aria-label={`${m} CO2 per cubic metre`} value={materialRates[m].co2_per_cum || ''} placeholder={DEFAULT_MATERIAL_RATES[m] ? `${DEFAULT_MATERIAL_RATES[m].co2_per_cum}` : 'default'} onChange={e=>updateMaterialRate(m,'co2_per_cum', Number(e.target.value))} className={numIn()} title="Blank = use the built-in IRC/MoRTH default rate"/> : <span />}
-                </React.Fragment>
-              ))}
-            </div>
-          </Tile>
-        )}
-
-        {/* ── CTB axle spectrum ── */}
-        {showCtbPanel && (
-          <Tile id="tile-ctb" title="CTB axle-load spectrum" icon={Activity} className="md:col-span-1 xl:col-span-2 fp-fade-up"
-            actions={<>
-              <Toggle id="ctbOn" checked={useCtbSpectrum} label="Use"
-                onChange={(enabled) => {
-                  setUseCtbSpectrum(enabled);
-                  if (enabled && !ctbSpectrumText.trim()) setCtbSpectrumText(DEFAULT_CTB_AXLE_SPECTRUM_TEXT);
-                }} title="Run the stress-ratio cumulative damage check (IRC:37-2018 Eq. 3.6/3.7) in addition to Eq. 3.5" />
-              <Toggle id="ctbPerClass" checked={ctbPerClassBridgeRecompute} onChange={setCtbPerClassBridgeRecompute} label="All designs"
-                title="Spectrum-check every design, not only those that pass the other criteria (slower)" />
-            </>}>
-            <div className="flex flex-col gap-1">
-              <div className="flex items-start justify-between gap-2">
-                <p className="m-0 text-[10px] text-[var(--text-muted)] leading-snug">
-                  Axle groups for the CTB fatigue damage check; tandems and tridems are split into single axles
-                  (Annex II.4). Without a spectrum only the strain criterion (Eq. 3.5) is applied.
-                </p>
-                <button type="button" className="fp-tbtn h-[22px] flex-none"
-                  onClick={() => { setUseCtbSpectrum(true); setCtbSpectrumText(DEFAULT_CTB_AXLE_SPECTRUM_TEXT); }}>
-                  Load example
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                <button type="button" className="fp-tbtn" aria-pressed={showRatesPanel} disabled={!optimizeByCost && !optimizeByCo2}
+                  onClick={() => setShowRatesPanel(v => !v)} title={optimizeByCost || optimizeByCo2 ? 'Edit material unit rates' : 'Enable Cost or CO₂ to edit rates'}>
+                  <IndianRupee size={14}/> Rates
+                </button>
+                <button type="button" className="fp-tbtn" aria-pressed={showCtbPanel}
+                  onClick={() => setShowCtbPanel(v => !v)} title="CTB axle-load spectrum for the IRC:37-2018 Eq. 3.6 cumulative damage check">
+                  <Activity size={14}/> CTB spectrum{useCtbSpectrum ? ' · on' : ''}
                 </button>
               </div>
-              <textarea
-                value={ctbSpectrumText}
-                onChange={e => setCtbSpectrumText(e.target.value)}
-                rows={6}
-                spellCheck={false}
-                aria-label="CTB axle-load spectrum (JSON)"
-                placeholder={DEFAULT_CTB_AXLE_SPECTRUM_TEXT}
-                className={cn(inp, "w-full min-h-24 resize-y text-[10px] leading-4")}
-              />
-              <p className="m-0 text-[9.5px] text-[var(--text-muted)]">
-                JSON array of <code>{'{ axle_type, load_kn, expected_repetitions }'}</code>.
-              </p>
-            </div>
-          </Tile>
-        )}
-
-        {/* ═══ RESULTS ═══ */}
-        <Tile id="tile-results" title="Results" icon={Table2} className="md:col-span-2 xl:col-span-4"
-          actions={<>
-            {optimizationMode && optimizedDesigns && <Chip tone={optimizedDesigns.length ? 'ok' : 'fail'}>{optimizedDesigns.length} IRC-adequate</Chip>}
-            {!optimizationMode && results && <Chip tone="muted"><span className="fp-num">{results.length}</span>&nbsp;point(s) · Evaluate</Chip>}
-            {evalVerdict?.stale && <Chip tone="warn" title="An input changed after this evaluation — run Evaluate again">Inputs changed</Chip>}
-            <button type="button" className="fp-tbtn h-[22px]" onClick={handlePdfExport} disabled={!optimizedDesigns?.length}
-              title={optimizedDesigns?.length ? 'Download the PDF design report' : 'Run Optimize first'}>
-              <FileText size={11}/> PDF
-            </button>
-          </>}>
-          <div className="flex flex-col gap-2">
-            {error && <Notice tone="fail" title="Run failed">{error}</Notice>}
-            {autoEError && <Notice tone="warn" title="Layer moduli">{autoEError}</Notice>}
-
-            {isSolving ? (
-              <div className="flex flex-col gap-2" aria-live="polite">
-                <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
-                  <Loader2 size={14} className="animate-spin text-[var(--accent)]"/>
-                  <span>{optimizationMode ? 'Searching constructable thicknesses and checking IRC criteria…' : (solverStatus || 'Computing stresses and strains…')}</span>
-                  {solverStatus && !optimizationMode && <span className="text-[10px]">(the in-browser solver loads once per session)</span>}
-                </div>
-                <div className={cn("grid gap-2", optimizationMode ? "grid-cols-1 md:grid-cols-2 xl:grid-cols-4" : "grid-cols-1")}>
-                  {(optimizationMode ? [0, 1, 2, 3] : [0]).map(k => (
-                    <div key={k} className="fp-skeleton" style={{ height: optimizationMode ? 260 : 120, animationDelay: `${k * 120}ms` }} />
-                  ))}
-                </div>
-              </div>
-            ) : optimizationMode && optimizedDesigns ? (
-              <>
-                {sp72Info && sp72Info.is_low_volume && (
-                  <Notice tone="warn" title={`IRC:SP:72 low-volume road — ${sp72Info.traffic_category || '—'}`}>
-                    {Number(sp72Info.esal).toLocaleString('en-IN')} ESAL (~{sp72Info.msa} msa) · subgrade {sp72Info.subgrade_class} ({sp72Info.subgrade_class_name})
-                    {sp72Info.surfacing_hint && <> · surfacing: {sp72Info.surfacing_hint}</>}
-                    {sp72Info.advisory && sp72Info.advisory.length > 0 && (
-                      <ul className="mt-0.5 mb-0 list-disc ml-4 space-y-0.5 text-[10.5px]">
-                        {sp72Info.advisory.map((a, ai) => <li key={ai}>{a}</li>)}
-                      </ul>
-                    )}
-                  </Notice>
-                )}
-                {reinforcementInfo && (
-                  <Notice tone="ok" title="Geosynthetic reinforcement (MIF, IRC:SP:59)">
-                    {reinforcementInfo.map((r,ri)=>(
-                      <span key={ri} className="mr-3 fp-num">{r.layer} + {r.geogrid} → modulus ×{r.mif}</span>
-                    ))}
-                  </Notice>
-                )}
-                {optimizeWarnings && optimizeWarnings.length > 0 && (
-                  <details className="group rounded-md border border-[var(--hairline)] bg-[var(--surface-sunken)]" open={optimizedDesigns.length === 0}>
-                    <summary className="cursor-pointer select-none list-none flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-[var(--text-main)]">
-                      <ChevronDown size={12} className="transition-transform group-open:rotate-180" aria-hidden="true"/>
-                      Engine advisories <span className="fp-num text-[var(--text-muted)]">({optimizeWarnings.length})</span>
-                    </summary>
-                    <ul className="m-0 px-2.5 pb-2 pl-7 list-disc space-y-0.5 text-[10.5px] text-[var(--text-main)]">
-                      {optimizeWarnings.map((w, wi) => <li key={wi}>{w}</li>)}
-                    </ul>
-                  </details>
-                )}
-                {optimizedDesigns.length > 0 ? (
-                  <div className="grid gap-2 grid-cols-1 md:grid-cols-2 xl:grid-cols-4 items-start">
-                    {optimizedDesigns.slice(0, 12).map((d, i) => (
-                      <DesignCard key={i} d={d} index={i} colorOf={(l, j) => getLayerColor(l, j, false)}
-                        airVoids={airVoids} bitumenVolume={bitumenVolume} onApply={applyDesign}
-                        style={{ animationDelay: `${Math.min(i, 8) * 60}ms` }} />
-                    ))}
-                    <DesignCompare
-                      designs={optimizedDesigns.slice(0, 12)}
-                      className={cn(
-                        { 1: 'xl:col-span-3', 2: 'xl:col-span-2', 3: 'xl:col-span-1' }[Math.min(optimizedDesigns.length, 12) % 4] || 'xl:col-span-4',
-                        optimizedDesigns.length % 2 === 1 ? 'md:col-span-1' : 'md:col-span-2',
-                      )}
-                      optimizeByCost={optimizeByCost} optimizeByCo2={optimizeByCo2}
-                      setOptimizeByCost={setOptimizeByCost} setOptimizeByCo2={setOptimizeByCo2}
-                      onRerun={doOptimize} busy={isSolving}
-                    />
+              {(optimizeByCost || optimizeByCo2) && showRatesPanel && (
+                <div id="tile-rates" className="flex flex-col gap-1.5 rounded-[var(--radius-control)] border border-[var(--hairline)] p-2.5 fp-fade-up">
+                  <div className="flex items-baseline justify-between">
+                    <span className="fp-kpi-label">Material rates</span>
+                    <span className="text-[11.5px] text-[var(--text-muted)]">blank = IRC/MoRTH default</span>
                   </div>
-                ) : (
-                  <Notice tone="fail" title="No IRC-adequate design within the current bounds">
-                    The advisories above name the governing failure mode and the closest-to-passing CDF. Typical remedies:
-                    raise the layer max-thickness bounds, revisit the subgrade CBR, or revisit the traffic inputs (CVPD / VDF / growth / design life).
-                  </Notice>
-                )}
-              </>
-            ) : !optimizationMode && results ? (
-              <>
-                {/* IRC verdict of the evaluated section */}
-                {evalVerdict && (
-                  <div className="grid gap-x-4 gap-y-2 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 rounded-md border border-[var(--hairline)] bg-[var(--surface-sunken)] p-2.5">
-                    {evalVerdict.hasBituminous && (
-                      evalVerdict.compressive ? (
-                        <div className="fp-kpi">
-                          <span className="fp-kpi-label">Fatigue (Eq. 3.{reliabilityPercent === 90 ? 4 : 3})</span>
-                          <Chip tone="info" title="Every horizontal strain at the bottom of the bituminous layer is compressive: fatigue need not be checked (IRC:37-2018 Annex III).">Not checked · compressive</Chip>
-                        </div>
-                      ) : (
-                        <UtilBar label={`Fatigue CDF (Eq. 3.${reliabilityPercent === 90 ? 4 : 3})`} ratio={evalVerdict.cdfF}
-                          display={evalVerdict.cdfF != null ? `${(evalVerdict.cdfF * 100).toFixed(1)}%` : 'no εt point'}
-                          note={evalVerdict.epsT != null ? `εt ${(evalVerdict.epsT * 1e6).toFixed(1)} µε · allowable ${(evalVerdict.allow.epsT * 1e6).toFixed(1)} µε` : 'place a point at the bituminous bottom'}
-                          title="(εt / allowable)^3.89 = design traffic / Nf at the bottom of the bituminous layer, for the current traffic and reliability." />
-                      )
-                    )}
-                    <UtilBar label={`Rutting CDF (Eq. 3.${reliabilityPercent === 90 ? 2 : 1})`} ratio={evalVerdict.cdfR}
-                      display={evalVerdict.cdfR != null ? `${(evalVerdict.cdfR * 100).toFixed(1)}%` : 'no εv point'}
-                      note={evalVerdict.epsV != null ? `εv ${(evalVerdict.epsV * 1e6).toFixed(1)} µε · allowable ${(evalVerdict.allow.epsV * 1e6).toFixed(1)} µε` : 'place a point at the top of the subgrade'}
-                      title="(εv / allowable)^4.5337 = design traffic / NR at the top of the subgrade." />
-                    {longLife && evalVerdict.hasBituminous && !evalVerdict.compressive && (
-                      <UtilBar label={<>Long-life <span className="normal-case">εt / 80 µε</span></>} ariaLabel="Long-life tensile strain ratio" ratio={evalVerdict.llT}
-                        display={evalVerdict.epsT != null ? `${(evalVerdict.epsT * 1e6).toFixed(1)} µε` : '—'}
-                        title="IRC:37-2018 §10 endurance limit for the bituminous tensile strain (35 °C)." />
-                    )}
-                    {longLife && (
-                      <UtilBar label={<>Long-life <span className="normal-case">εv / 200 µε</span></>} ariaLabel="Long-life vertical strain ratio" ratio={evalVerdict.llV}
-                        display={evalVerdict.epsV != null ? `${(evalVerdict.epsV * 1e6).toFixed(1)} µε` : '—'}
-                        title="IRC:37-2018 §10 limit for the subgrade vertical strain." />
-                    )}
-                    {(() => {
-                      const ratios = [evalVerdict.cdfF, evalVerdict.cdfR, evalVerdict.llT, evalVerdict.llV].filter(x => x != null);
-                      const worst = ratios.length ? Math.max(...ratios) : null;
-                      if (worst == null) return null;
+                  <div className="grid grid-cols-[52px_repeat(2,minmax(0,1fr))] gap-x-2 gap-y-1.5 items-center">
+                    <span />
+                    <span className="text-[11.5px] font-semibold text-[var(--text-muted)]">{optimizeByCost ? '₹ / m³' : ''}</span>
+                    <span className="text-[11.5px] font-semibold text-[var(--text-muted)]">{optimizeByCo2 ? 'kg CO₂ / m³' : ''}</span>
+                    {Object.keys(materialRates).map((m) => (
+                      <React.Fragment key={m}>
+                        <span className="text-[12.5px] font-bold text-[var(--text-main)]">{m}</span>
+                        {optimizeByCost ? <input type="number" step="1" aria-label={`${m} cost per cubic metre`} value={materialRates[m].cost_per_cum || ''} placeholder={DEFAULT_MATERIAL_RATES[m] ? `${DEFAULT_MATERIAL_RATES[m].cost_per_cum}` : 'default'} onChange={e=>updateMaterialRate(m,'cost_per_cum', Number(e.target.value))} className={numIn()} title="Blank = use the built-in IRC/MoRTH default rate"/> : <span />}
+                        {optimizeByCo2 ? <input type="number" step="1" aria-label={`${m} CO2 per cubic metre`} value={materialRates[m].co2_per_cum || ''} placeholder={DEFAULT_MATERIAL_RATES[m] ? `${DEFAULT_MATERIAL_RATES[m].co2_per_cum}` : 'default'} onChange={e=>updateMaterialRate(m,'co2_per_cum', Number(e.target.value))} className={numIn()} title="Blank = use the built-in IRC/MoRTH default rate"/> : <span />}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {showCtbPanel && (
+                <div id="tile-ctb" className="flex flex-col gap-2 rounded-[var(--radius-control)] border border-[var(--hairline)] p-2.5 fp-fade-up">
+                  <span className="fp-kpi-label">CTB axle-load spectrum</span>
+                  <Toggle id="ctbOn" checked={useCtbSpectrum} label="Use the spectrum (Eq. 3.6/3.7)"
+                    onChange={(enabled) => {
+                      setUseCtbSpectrum(enabled);
+                      if (enabled && !ctbSpectrumText.trim()) setCtbSpectrumText(DEFAULT_CTB_AXLE_SPECTRUM_TEXT);
+                    }} title="Run the stress-ratio cumulative damage check (IRC:37-2018 Eq. 3.6/3.7) in addition to Eq. 3.5" />
+                  <Toggle id="ctbPerClass" checked={ctbPerClassBridgeRecompute} onChange={setCtbPerClassBridgeRecompute} label="Check every design"
+                    title="Spectrum-check every design, not only those that pass the other criteria (slower)" />
+                  <p className="m-0 text-[12px] text-[var(--text-muted)] leading-snug">
+                    Axle groups for the CTB fatigue damage check; tandems and tridems are split into single axles
+                    (Annex II.4). Without a spectrum only the strain criterion (Eq. 3.5) is applied.
+                  </p>
+                  <textarea
+                    value={ctbSpectrumText}
+                    onChange={e => setCtbSpectrumText(e.target.value)}
+                    rows={6}
+                    spellCheck={false}
+                    aria-label="CTB axle-load spectrum (JSON)"
+                    placeholder={DEFAULT_CTB_AXLE_SPECTRUM_TEXT}
+                    className={cn(inp, "w-full min-h-24 resize-y text-[11.5px] leading-4 font-mono")}
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11.5px] text-[var(--text-muted)]">JSON <code>{'{ axle_type, load_kn, expected_repetitions }'}</code></span>
+                    <button type="button" className="fp-tbtn h-8 flex-none"
+                      onClick={() => { setUseCtbSpectrum(true); setCtbSpectrumText(DEFAULT_CTB_AXLE_SPECTRUM_TEXT); }}>
+                      Load example
+                    </button>
+                  </div>
+                </div>
+              )}
+            </RailSection>
+
+            {/* ⑥ Analysis points (Evaluate) */}
+            <RailSection id="points" num={6} title="Analysis points" summary={sumPoints}>
+              <div className="flex flex-col gap-2" id="tile-points">
+                <Toggle id="autoPoints" checked={autoPoints} onChange={(on) => { setAutoPoints(on); if (on) placeIrcPoints(); }}
+                  label="Follow the IRC critical points"
+                  title="Bottom of the bituminous layer and of a CTB (0.1 mm above), top of the subgrade (0.1 mm below); r = 0 and between the duals. Editing a point switches this off." />
+                <div className="flex items-center gap-2">
+                  <label htmlFor="numPoints" className="text-[12.5px] text-[var(--text-muted)]">Points</label>
+                  <select id="numPoints" value={numPoints} onChange={e=>{ setAutoPoints(false); setNumPoints(parseInt(e.target.value)); }}
+                    className={cn(inp, 'w-16 font-bold cursor-pointer')}>
+                    {[1,2,3,4,5,6,7,8,9,10].map(n=><option key={n} value={n}>{n}</option>)}
+                  </select>
+                  {!autoPoints && (
+                    <button type="button" className="fp-tbtn h-8 ml-auto" onClick={placeIrcPoints}
+                      title="Place the IRC critical points for this stack and follow it again">
+                      <Crosshair size={13}/> IRC points
+                    </button>
+                  )}
+                </div>
+                <table className="fp-rt text-[12.5px] border-collapse w-full">
+                  <colgroup>{pointsRT.cols.map((w,k)=><col key={k} style={{width:w}}/>)}<col /></colgroup>
+                  <thead>
+                    <tr className="text-[11.5px] text-[var(--text-muted)] font-semibold">
+                      <th className="relative text-left py-1">#<ColGrip rt={pointsRT} i={0}/></th>
+                      <th className="relative text-left py-1">z (mm)<ColGrip rt={pointsRT} i={1}/></th>
+                      <th className="relative text-left py-1">r (mm)<ColGrip rt={pointsRT} i={2}/></th>
+                      <th className="text-left py-1 pl-1.5">Role</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {points.map((p,i)=>{
+                      const role = pointRoleOf(i);
                       return (
-                        <div className="fp-kpi justify-center">
-                          <span className="fp-kpi-label">Verdict <span className="normal-case">({designMsa.toFixed(1)} msa · R{reliabilityPercent})</span></span>
-                          <span>
-                            <Chip tone={worst > 1 ? 'fail' : 'ok'}>{worst > 1 ? 'Not IRC-adequate' : 'IRC-adequate'}</Chip>
-                            <span className="text-[10px] text-[var(--text-muted)] ml-1.5">{stackHasCtb ? 'CTB fatigue: run Optimize' : 'bituminous fatigue + subgrade rutting'}</span>
-                          </span>
-                        </div>
+                        <tr key={i} style={pointsRT.rowH[i]?{height:pointsRT.rowH[i]}:undefined}>
+                          <td className="relative py-0.5 font-bold text-[var(--text-muted)] text-[12px] fp-num">P{i+1}<RowGrip rt={pointsRT} rowKey={i} getHeight={()=>pointsRT.rowH[i]||0}/></td>
+                          <td className="py-0.5 pr-1"><input type="number" aria-label={`Point ${i+1} depth`} value={p.z} onChange={e=>updatePoint(i,'z',Number(e.target.value))} className={numIn("h-8")}/></td>
+                          <td className="py-0.5"><input type="number" aria-label={`Point ${i+1} radius`} value={p.r} onChange={e=>updatePoint(i,'r',Number(e.target.value))} className={numIn("h-8")}/></td>
+                          <td className="py-0.5 pl-1.5">
+                            {role === 'fatigue' ? <Chip tone="info" title="Bottom of the bituminous layer: fatigue strain">εt</Chip>
+                              : role === 'rutting' ? <Chip tone="info" title="Top of the subgrade: rutting strain">εv</Chip>
+                              : role === 'ctb' ? <Chip tone="info" title="Bottom of the CTB: CTB fatigue (checked by Optimize at 0.80 MPa)">CTB</Chip>
+                              : <Chip tone="muted" title="Not at a critical interface of the current stack (±5 mm)">—</Chip>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {!pointRoles.ok && (
+                  <div className="text-[12px] text-[var(--warn)]">
+                    Points miss the critical interfaces of this stack — use <b>IRC points</b>.
+                  </div>
+                )}
+              </div>
+            </RailSection>
+          </div>
+
+          <div className="fp-rail-foot">{runButtons}</div>
+        </aside>
+
+        {/* ═══ BENTO CANVAS ═══ */}
+        <main className="min-w-0 flex flex-col" aria-label="Results">
+          {(restoredNotice || error || autoEError) && (
+            <div className="flex flex-col gap-2 px-[var(--tile-gap)] pt-[var(--tile-gap)]">
+              {restoredNotice && (
+                <Notice tone="info" title="Session restored" onDismiss={() => setRestoredNotice(false)}>
+                  These inputs and results are your last session, auto-saved in this
+                  browser. Use <b>Reset</b> for a fresh project (it offers a JSON export first) or <b>Export</b> to file this one.
+                </Notice>
+              )}
+              {error && <Notice tone="fail" title="Run failed">{error}</Notice>}
+              {autoEError && <Notice tone="warn" title="Layer moduli">{autoEError}</Notice>}
+            </div>
+          )}
+
+          <div className="fp-bento fp-canvas">
+            {/* Hero: verdict of the section on screen */}
+            <HeroVerdict
+              className="col-span-12 xl:col-span-8 min-h-[300px]"
+              state={heroState}
+              basis={{ msa: designMsa, reliability: reliabilityPercent, roadLabel, designLife, allowT: allowNow.epsT, allowV: allowNow.epsV, longLife }}
+              verdict={heroVerdict}
+              onEvaluate={() => doSingleRun()} onOptimize={doOptimize}
+              busyText={optimizationMode ? 'Searching constructable thicknesses and checking every IRC criterion…' : (solverStatus || 'Computing stresses and strains…')}
+            />
+
+            {/* KPI: fatigue strain */}
+            <section id="tile-kpi-et" className="fp-tile col-span-12 sm:col-span-6 xl:col-span-4" aria-labelledby="tile-kpi-et-title">
+              <div className="fp-tile-head"><h2 className="fp-tile-title" id="tile-kpi-et-title"><Layers size={14} aria-hidden="true" />Fatigue strain <span className="normal-case">εt</span></h2>
+                <span className="text-[11.5px] text-[var(--text-muted)]">{showingLabel}</span></div>
+              <div className="fp-tile-body flex flex-col gap-2">
+                <div className="flex items-baseline gap-1.5 flex-wrap">
+                  <FlashValue value={`${shown.epsT}`} className={cn('fp-kpi-value text-[36px]', ratioT != null && ratioT > 1 && 'text-[var(--fail)]', shown.epsT == null && 'text-[var(--text-muted)]')}>
+                    {!shown.hasBit ? '—' : shown.epsT == null ? fmtUe(shown.allow?.epsT) : shown.compressive ? `−${fmtUe(shown.epsT)}` : fmtUe(shown.epsT)}
+                  </FlashValue>
+                  {shown.hasBit && shown.epsT != null && shown.allow?.epsT != null && <span className="fp-num text-[18px] font-medium text-[var(--text-muted)]">/ {fmtUe(shown.allow.epsT)}</span>}
+                  {shown.hasBit && <span className="fp-kpi-unit">µε{shown.epsT == null ? ' allowable' : ''}</span>}
+                </div>
+                <span className="fp-kpi-sub whitespace-normal">
+                  {!shown.hasBit ? 'No bituminous layer in this section.'
+                    : shown.compressive ? 'Compressive at the bituminous bottom — fatigue is not checked (Annex III).'
+                    : shown.epsT == null ? `Eq. 3.${shown.rel === 90 ? 4 : 3}${bundleE != null ? `, MRm ${Number(bundleE).toFixed(0)} MPa` : ''}. Evaluate or optimize to compare the actual strain.`
+                    : `Bottom of the bituminous layer against the allowable of Eq. 3.${shown.rel === 90 ? 4 : 3}.`}
+                </span>
+                {ratioT != null && <UtilBar label="Strain / allowable" ratio={ratioT} display={`${(ratioT * 100).toFixed(0)}%`} />}
+                {longLife && shown.hasBit && !shown.compressive && shown.epsT != null && (
+                  <UtilBar label={<>Long-life · <span className="normal-case">80 µε</span></>} ariaLabel="Long-life tensile strain ratio" ratio={Math.abs(shown.epsT) / LONG_LIFE_EPS_T} display={`${((Math.abs(shown.epsT) / LONG_LIFE_EPS_T) * 100).toFixed(0)}%`} />
+                )}
+              </div>
+            </section>
+
+            {/* KPI: rutting strain */}
+            <section id="tile-kpi-ev" className="fp-tile col-span-12 sm:col-span-6 xl:col-span-4" aria-labelledby="tile-kpi-ev-title">
+              <div className="fp-tile-head"><h2 className="fp-tile-title" id="tile-kpi-ev-title"><Layers size={14} aria-hidden="true" />Rutting strain <span className="normal-case">εv</span></h2>
+                <span className="text-[11.5px] text-[var(--text-muted)]">{showingLabel}</span></div>
+              <div className="fp-tile-body flex flex-col gap-2">
+                <div className="flex items-baseline gap-1.5 flex-wrap">
+                  <FlashValue value={`${shown.epsV}`} className={cn('fp-kpi-value text-[36px]', ratioV != null && ratioV > 1 && 'text-[var(--fail)]', shown.epsV == null && 'text-[var(--text-muted)]')}>
+                    {shown.epsV == null ? fmtUe(shown.allow?.epsV) : fmtUe(shown.epsV)}
+                  </FlashValue>
+                  {shown.epsV != null && shown.allow?.epsV != null && <span className="fp-num text-[18px] font-medium text-[var(--text-muted)]">/ {fmtUe(shown.allow.epsV)}</span>}
+                  <span className="fp-kpi-unit">µε{shown.epsV == null ? ' allowable' : ''}</span>
+                </div>
+                <span className="fp-kpi-sub whitespace-normal">
+                  {shown.epsV == null ? `Eq. 3.${shown.rel === 90 ? 2 : 1}. Evaluate or optimize to compare the actual strain.`
+                    : `Top of the subgrade against the allowable of Eq. 3.${shown.rel === 90 ? 2 : 1}.`}
+                </span>
+                {ratioV != null && <UtilBar label="Strain / allowable" ratio={ratioV} display={`${(ratioV * 100).toFixed(0)}%`} />}
+                {longLife && shown.epsV != null && (
+                  <UtilBar label={<>Long-life · <span className="normal-case">200 µε</span></>} ariaLabel="Long-life vertical strain ratio" ratio={Math.abs(shown.epsV) / LONG_LIFE_EPS_V} display={`${((Math.abs(shown.epsV) / LONG_LIFE_EPS_V) * 100).toFixed(0)}%`} />
+                )}
+              </div>
+            </section>
+
+            {/* KPI: design traffic */}
+            <section id="tile-kpi-msa" className="fp-tile col-span-12 sm:col-span-6 xl:col-span-4" aria-labelledby="tile-kpi-msa-title">
+              <div className="fp-tile-head"><h2 className="fp-tile-title" id="tile-kpi-msa-title"><Truck size={14} aria-hidden="true" />Design traffic</h2>
+                <span className="text-[11.5px] text-[var(--text-muted)]">Eq. 4.5 / 4.6</span></div>
+              <div className="fp-tile-body flex flex-col gap-2"
+                   title="N = 365 · A · LDF · VDF · ((1+r)^n − 1)/r, A = P(1+r)^x (IRC:37-2018 Eq. 4.5/4.6)">
+                <div className="flex items-baseline gap-1.5">
+                  <FlashValue value={designMsa.toFixed(1)} className="fp-kpi-value text-[36px]">{designMsa.toFixed(1)}</FlashValue>
+                  <span className="fp-kpi-unit">msa</span>
+                  <Chip tone="muted" className="ml-auto" title="Reliability per IRC:37-2018 §3.7">R{reliabilityPercent}</Chip>
+                </div>
+                <span className="fp-kpi-sub whitespace-normal">
+                  {Math.round(Number(cvpd) * Math.pow(1 + Number(growthRate), Number(constructionYears) || 0)).toLocaleString('en-IN')} CVPD at opening · LDF {ldf} · VDF {vdf} · {(growthRate * 100).toFixed(1)}%/yr
+                </span>
+                <div className="relative h-[54px] mt-1" aria-hidden="true">
+                  <svg className="absolute inset-0 w-full h-full overflow-visible" viewBox={`0 0 100 40`} preserveAspectRatio="none">
+                    {(() => {
+                      const max = trafficCurve[trafficCurve.length - 1] || 1;
+                      const n = trafficCurve.length - 1 || 1;
+                      const pts = trafficCurve.map((v, k) => `${(k / n) * 100},${40 - (v / max) * 38}`);
+                      return (
+                        <>
+                          <path d={`M0,40 L${pts.join(' L')} L100,40 Z`} fill="var(--accent-soft)" />
+                          <path d={`M${pts.join(' L')}`} fill="none" stroke="var(--accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+                        </>
                       );
                     })()}
-                  </div>
-                )}
-                {evalVerdict && !evalVerdict.roles.ok && (
-                  <Notice tone="warn" title="Analysis points are off the critical interfaces">
-                    The verdict needs a point at the bottom of the bituminous layer and one at the top of the subgrade.{' '}
-                    <button type="button" className="underline font-semibold" onClick={placeIrcPoints}>Place IRC points</button> and evaluate again.
-                  </Notice>
-                )}
-                {/* Peak responses: the solve response's governing maxima.
-                    ε_h is the largest TENSILE horizontal strain, max of the
-                    signed ε_t, ε_r (tension +), floored at 0 — the quantity the
-                    IRC fatigue criterion takes (Annex III: an all-compressive
-                    strain is not checked). */}
-                {(() => {
-                  const maxDisp = Math.max(0, ...results.map(r => Math.abs(r.disp_z || 0)));
-                  const maxEpsH = Math.max(0, ...results.map(r => Math.max(Number(r.eps_t) || 0, Number(r.eps_r) || 0)));
-                  const maxEpsZ = Math.max(0, ...results.map(r => Math.abs(r.eps_z || 0)));
-                  return (
-                    <div className="grid grid-cols-3 gap-3 px-1">
-                      <Kpi label={<><span className="normal-case">δz</span> max</>} value={maxDisp.toFixed(3)} unit="mm" title="Maximum |δ_z| across the evaluated points" />
-                      <Kpi label={<><span className="normal-case">εh</span> max (tensile)</>} value={(maxEpsH * 1e6).toFixed(1)} unit="µε"
-                        title="Largest TENSILE horizontal strain across the points — max of the signed ε_t, ε_r (tension positive), 0 when every value is compressive (IRC:37-2018 Annex III)." />
-                      <Kpi label={<><span className="normal-case">εz</span> max</>} value={(maxEpsZ * 1e6).toFixed(1)} unit="µε" title="Maximum |ε_z| across the points — rutting-governing at the top of the subgrade" />
-                    </div>
-                  );
-                })()}
-                <div className="overflow-auto rounded-md border border-[var(--hairline)]">
-                <table className="w-full min-w-[1050px] text-[11px] text-left fp-num border-collapse leading-5">
-                <thead className="text-[10px] text-[var(--text-muted)] font-semibold sticky top-0 z-20 bg-[var(--tile-head)]">
-                  <tr className="tracking-wide">
-                    <th colSpan={3} className="py-1 px-3 border-b border-[var(--hairline)]">Location</th>
-                    <th colSpan={4} className="py-1 px-3 border-b border-[var(--hairline)]">Stress state (MPa)</th>
-                    <th className="py-1 px-3 border-b border-[var(--hairline)]">Deflection</th>
-                    <th colSpan={3} className="py-1 px-3 border-b border-[var(--hairline)] text-[var(--accent)]">Strains (failure checks)</th>
-                  </tr>
-                  <tr>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">Role</th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">z (mm)</th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">r (mm)</th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ<sub>z</sub></th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ<sub>t</sub></th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ<sub>r</sub></th>
-                    <th
-                      className="py-1.5 px-3 border-b border-[var(--hairline)] cursor-help"
-                      title={"τ_rz — vertical shear stress (MPa). Not used by any IRC:37 design criterion (fatigue uses ε_t/ε_r, rutting uses ε_z, CTB uses σ_t).\n\nIITPAVE convention note: for a dual wheel evaluated on the symmetry axis (R = spacing/2), the two wheels' shear contributions cancel, so the physically-correct elastic value is ≈ 0 — which is what this solver reports. The original IITPAVE instead reports ≈ 2× the single-wheel shear here, because it superimposes the two wheels without the symmetry sign-flip. The two agree on all design quantities (σ, ε, δ) to <1%; only this non-design shear differs."}
-                    >τ<sub>rz</sub><span className="align-super text-[8px] ml-0.5">&#9432;</span></th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)]">δ<sub>z</sub> (mm)</th>
-                    <th
-                      className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent)] cursor-help"
-                      title="ε_r — radial horizontal strain (tension positive). The IRC:37 fatigue criterion uses the largest TENSILE horizontal strain, max of the signed ε_t, ε_r at the bottom of the bituminous layer; under dual wheels at R = 155 mm, ε_r can govern over ε_t. If both are compressive, fatigue is not checked (IRC:37-2018 Annex III)."
-                    >ε<sub>r</sub><span className="align-super text-[8px] ml-0.5">&#9432;</span></th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--fail)] sticky right-24 z-20 bg-[var(--tile-head)]">ε<sub>z</sub></th>
-                    <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent)] sticky right-0 z-20 bg-[var(--tile-head)]">ε<sub>t</sub></th>
+                  </svg>
+                </div>
+                <div className="flex justify-between text-[11px] text-[var(--text-muted)] fp-num -mt-1">
+                  <span>year 0</span><span>cumulative msa</span><span>year {designLife}</span>
+                </div>
+              </div>
+            </section>
+
+            {/* KPI: cost and carbon */}
+            <section id="tile-kpi-cost" className="fp-tile col-span-12 sm:col-span-6 xl:col-span-4" aria-labelledby="tile-kpi-cost-title">
+              <div className="fp-tile-head"><h2 className="fp-tile-title" id="tile-kpi-cost-title"><IndianRupee size={14} aria-hidden="true" />Cost · carbon</h2>
+                <span className="text-[11.5px] text-[var(--text-muted)]">{showingLabel}</span></div>
+              <div className="fp-tile-body flex flex-col gap-2"
+                   title="Materials only, per km of a 3.5 m lane: volume × unit rate (the optimizer's cost model; blank rates use the IRC/MoRTH defaults).">
+                <div className="flex items-baseline gap-1.5 flex-wrap">
+                  <span className="fp-num text-[22px] font-semibold text-[var(--text-muted)]">₹</span>
+                  <FlashValue value={shown.cost} className="fp-kpi-value text-[36px]">{costSplit[0]}</FlashValue>
+                  <span className="fp-kpi-unit">{costSplit[1]}</span>
+                  <span className="ml-auto inline-flex items-center gap-1 fp-num text-[14px] font-semibold text-[var(--text-bold)]">
+                    <Leaf size={13} className="text-[var(--ok)]" aria-hidden="true" />{(shown.co2 / 1000).toFixed(1)}<span className="text-[12px] font-medium text-[var(--text-muted)]">t CO₂</span>
+                  </span>
+                </div>
+                <span className="fp-kpi-sub whitespace-normal">Materials · 3.5 m lane{shown.costEstimated ? ' · estimated here from the unit rates' : ' · from the optimizer'}</span>
+                <div className="flex h-3 rounded-full overflow-hidden bg-[var(--track)] mt-1" role="img"
+                     aria-label={`Cost share: ${costParts.map(p => `${p.name} ${shown.cost ? Math.round((p.c / shown.cost) * 100) : 0}%`).join(', ')}`}>
+                  {costParts.map((p) => (
+                    <span key={p.k} className="h-full fp-grow fp-ink" title={`${p.name}: ${formatRupees(p.c)}`}
+                          style={{ width: `${shown.cost ? (p.c / shown.cost) * 100 : 0}%`, background: colorOfName(p.name, p.k), boxShadow: 'inset -1px 0 0 var(--surface-panel)' }} />
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11.5px] text-[var(--text-muted)] fp-num">
+                  {costParts.map((p) => <span key={p.k}><b className="text-[var(--text-main)] font-semibold">{p.name}</b> {shown.cost ? Math.round((p.c / shown.cost) * 100) : 0}%</span>)}
+                </div>
+              </div>
+            </section>
+
+            {/* Cross-section (tall) */}
+            <Tile
+              id="tile-section" title="Cross-section" icon={Ruler}
+              className="col-span-12 md:col-span-6 xl:col-span-4 xl:col-start-9 xl:row-start-1 xl:row-span-2"
+              bodyClassName="p-2 pb-4 flex flex-col gap-3"
+              actions={<span className="text-[11.5px] text-[var(--text-muted)] fp-num">{wheelType === 'Dual' ? `dual · ${wheelSpacing} mm` : 'single wheel'} · trial section</span>}
+            >
+              <div className="flex items-center justify-center min-h-[300px]">
+                <PavementVisualizer
+                  layers={layers}
+                  points={points}
+                  wheelType={wheelType}
+                  wheelSpacing={wheelSpacing}
+                  load={load}
+                  pressure={pressure}
+                  highlight={hoverLayer}
+                  onHover={setHoverLayer}
+                />
+              </div>
+              {/* The moduli the analysis uses (auto Eq. 7.1 / Table 9.2, bundle at the bottom mix) */}
+              <table className="mx-2 text-[12px] fp-num border-collapse" aria-label="Analysed layer properties">
+                <thead>
+                  <tr className="text-[11px] text-[var(--text-muted)]">
+                    <th className="text-left font-semibold pb-1">Layer</th>
+                    <th className="text-right font-semibold pb-1">h mm</th>
+                    <th className="text-right font-semibold pb-1" title="Modulus the analysis uses (engine-consistent: auto Eq. 7.1 / Table 9.2, bituminous bundle at the bottom mix, §9.2)">E analysed</th>
+                    <th className="text-right font-semibold pb-1">ν</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {results.map((r,i)=>{
-                    const role = evalVerdict?.roles.bit_bottom.includes(i) ? 'εt' : evalVerdict?.roles.sub_top.includes(i) ? 'εv' : null;
+                  {layers.slice(0, nAll).map((l, i) => {
+                    const sub = i === nAll - 1;
                     return (
-                      <tr key={i} className="border-b border-[var(--hairline)] hover:bg-[var(--surface-sunken)]">
-                        <td className="py-1 px-3">{role ? <Chip tone="info">{role}</Chip> : <span className="text-[var(--text-muted)]">—</span>}</td>
-                        <td className="py-1 px-3 text-[var(--text-bold)]">{r.z.toFixed(1)}</td>
-                        <td className="py-1 px-3 text-[var(--text-bold)]">{r.r.toFixed(1)}</td>
-                        <td className="py-1 px-3">{formatSci(r.sigma_z)}</td>
-                        <td className="py-1 px-3">{formatSci(r.sigma_t)}</td>
-                        <td className="py-1 px-3">{formatSci(r.sigma_r)}</td>
-                        <td className="py-1 px-3 text-[var(--text-muted)]">{formatSci(r.tau_rz)}</td>
-                        <td className="py-1 px-3">{formatSci(r.disp_z)}</td>
-                        <td className="py-1 px-3 border-l border-[var(--hairline)] text-[var(--text-bold)]">{formatSci(r.eps_r)}</td>
-                        <td className="py-1 px-3 font-semibold text-[var(--fail)] border-l border-[var(--hairline)] sticky right-24 z-10 bg-[var(--surface-panel)]">{formatSci(r.eps_z)}</td>
-                        <td className="py-1 px-3 font-semibold text-[var(--accent)] border-l border-[var(--hairline)] sticky right-0 z-10 bg-[var(--surface-panel)]">{formatSci(r.eps_t)}</td>
+                      <tr key={i} className={cn('border-t border-[var(--hairline)] transition-colors', hoverLayer === i && 'bg-[var(--accent-soft)]')}
+                          onMouseEnter={() => setHoverLayer(i)} onMouseLeave={() => setHoverLayer(null)}>
+                        <td className="py-1 font-sans font-semibold text-[var(--text-main)]">
+                          <span className="inline-block w-2.5 h-2.5 rounded-sm mr-1.5 align-[-1px] border border-[var(--hairline-strong)]" style={{ background: getLayerColor(l, i, sub) }} aria-hidden="true" />
+                          {sub ? 'Subgrade' : (layerType(l) || `Layer ${i + 1}`)}
+                        </td>
+                        <td className="py-1 text-right text-[var(--text-bold)]">{sub ? '∞' : l.is_fixed ? nominalH(l).toFixed(0) : `${Number(l.min_h) || 0}–${Number(l.max_h) || 0}`}</td>
+                        <td className="py-1 text-right text-[var(--text-bold)]">{Number(analysisLayers[i]?.E ?? l.E).toFixed(0)}</td>
+                        <td className="py-1 text-right text-[var(--text-muted)]">{Number(analysisLayers[i]?.nu ?? l.nu).toFixed(2)}</td>
                       </tr>
                     );
                   })}
                 </tbody>
-                </table>
-                </div>
-              </>
-            ) : (
-              <div className="grid gap-2 sm:grid-cols-3 text-[11px] text-[var(--text-main)] py-2">
-                {[
-                  ['1', 'Set the section', 'Layer materials and thicknesses; mark layers Opt to let the optimizer vary them within min–max.'],
-                  ['2', 'Evaluate', 'Ctrl+Enter — stresses and strains at the analysis points, with the IRC fatigue and rutting verdict.'],
-                  ['3', 'Optimize', 'Ctrl+Shift+Enter — exhaustive search of constructable lifts; up to four IRC-adequate archetypes.'],
-                ].map(([n, h, t]) => (
-                  <div key={n} className="flex gap-2 rounded-md border border-dashed border-[var(--hairline-strong)] p-2.5">
-                    <span className="flex-none h-5 w-5 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] text-[10px] font-bold flex items-center justify-center">{n}</span>
-                    <div><div className="font-bold text-[var(--text-bold)]">{h}</div><div className="text-[var(--text-muted)] leading-snug">{t}</div></div>
+              </table>
+            </Tile>
+
+            {/* Crust composition */}
+            <Tile id="tile-crust" title="Crust composition" icon={PieChart}
+              className="col-span-12 md:col-span-6 xl:col-span-4"
+              actions={<span className="text-[11.5px] text-[var(--text-muted)]">{showingLabel}</span>}>
+              <CrustDonut
+                layers={shown.rows.map((l) => ({ ...l, color: colorOfName(l.name, l.index ?? 0) }))}
+                highlight={hoverLayer} onHover={setHoverLayer}
+                caption={shownBit > 0 ? `${shownBit.toFixed(0)} mm bituminous · ${shownCrust ? ((shownBit / shownCrust) * 100).toFixed(0) : 0}% of the crust` : 'No bituminous layer'}
+              />
+            </Tile>
+
+            {/* Strain–depth profile */}
+            <Tile id="tile-profile" title="Strain–depth profile" icon={TrendingUp}
+              className="col-span-12"
+              actions={<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--text-muted)]">
+                <span className="inline-flex items-center gap-1.5"><i className="inline-block w-4 h-[3px] rounded bg-[var(--accent)]" />εh</span>
+                <span className="inline-flex items-center gap-1.5"><i className="inline-block w-4 h-[3px] rounded bg-[var(--info)]" />εv</span>
+                <span className="inline-flex items-center gap-1.5"><i className="inline-block w-4 border-t-2 border-dashed border-[var(--text-muted)]" />allowable</span>
+                {longLife && <span className="inline-flex items-center gap-1.5"><i className="inline-block w-4 border-t-2 border-dotted border-[var(--ok)]" />long-life</span>}
+                <span>{wheelType === 'Dual' ? `max of r = 0, ${Math.round(wheelSpacing / 2)} mm` : 'r = 0'}</span>
+              </div>}>
+              <StrainProfile profile={profile} bands={profile?.bands}
+                colorOf={(b, k) => (b.subgrade ? '#7c6552' : getLayerColor({ type: b.name }, k, false))}
+                allow={shown.allow} longLife={longLife} height={320} />
+            </Tile>
+
+            {/* ═══ OPTIMIZED ARCHETYPES ═══ */}
+            {designs && (
+              <>
+                <div className="col-span-12 flex flex-wrap items-end justify-between gap-2 px-1 pt-3" id="tile-results">
+                  <div>
+                    <h2 className="m-0 text-[20px] font-bold tracking-tight text-[var(--text-bold)]">Optimized archetypes</h2>
+                    <p className="m-0 text-[13px] text-[var(--text-muted)]">
+                      {nDesigns ? `${nDesigns} IRC-adequate design${nDesigns === 1 ? '' : 's'} · pick one to inspect it above` : 'No IRC-adequate design within the current bounds'}
+                    </p>
                   </div>
+                  <button type="button" className="fp-tbtn" onClick={handlePdfExport} disabled={!nDesigns}
+                    title={nDesigns ? 'Download the PDF design report' : 'Run Optimize first'}>
+                    <FileText size={14}/> PDF report
+                  </button>
+                </div>
+                {designs.map((d, i) => (
+                  <DesignCard key={i} d={d} index={i} colorOf={(l, j) => getLayerColor(l, j, false)}
+                    airVoids={airVoids} bitumenVolume={bitumenVolume} onApply={applyDesign}
+                    selected={selIdx === i} onSelect={setSelectedDesign}
+                    style={{ animationDelay: `${Math.min(i, 8) * 60}ms` }}
+                    className={cn('col-span-12 md:col-span-6', nDesigns === 1 ? 'xl:col-span-4' : 'xl:col-span-3')} />
                 ))}
-              </div>
+                {nDesigns > 0 && (
+                  <DesignCompare
+                    designs={designs}
+                    className={cn('col-span-12',
+                      nDesigns === 1 ? 'md:col-span-6 xl:col-span-8'
+                      : nDesigns >= 4 ? '' : nDesigns === 3 ? 'md:col-span-6 xl:col-span-3' : 'xl:col-span-6')}
+                    wide={nDesigns >= 4}
+                    optimizeByCost={optimizeByCost} optimizeByCo2={optimizeByCo2}
+                    setOptimizeByCost={setOptimizeByCost} setOptimizeByCo2={setOptimizeByCo2}
+                    onRerun={doOptimize} busy={isSolving}
+                    selected={selIdx} onSelect={setSelectedDesign}
+                  />
+                )}
+                {(sp72Info?.is_low_volume || reinforcementInfo || (optimizeWarnings && optimizeWarnings.length > 0)) && (
+                  <Tile id="tile-advisories" title="Engine advisories" icon={AlertCircle} className="col-span-12"
+                    actions={optimizeWarnings?.length ? <Chip tone="muted"><span className="fp-num">{optimizeWarnings.length}</span>&nbsp;note{optimizeWarnings.length === 1 ? '' : 's'}</Chip> : null}>
+                    <div className="flex flex-col gap-2">
+                      {sp72Info && sp72Info.is_low_volume && (
+                        <Notice tone="warn" title={`IRC:SP:72 low-volume road — ${sp72Info.traffic_category || '—'}`}>
+                          {Number(sp72Info.esal).toLocaleString('en-IN')} ESAL (~{sp72Info.msa} msa) · subgrade {sp72Info.subgrade_class} ({sp72Info.subgrade_class_name})
+                          {sp72Info.surfacing_hint && <> · surfacing: {sp72Info.surfacing_hint}</>}
+                          {sp72Info.advisory && sp72Info.advisory.length > 0 && (
+                            <ul className="mt-0.5 mb-0 list-disc ml-4 space-y-0.5">
+                              {sp72Info.advisory.map((a, ai) => <li key={ai}>{a}</li>)}
+                            </ul>
+                          )}
+                        </Notice>
+                      )}
+                      {reinforcementInfo && (
+                        <Notice tone="ok" title="Geosynthetic reinforcement (MIF, IRC:SP:59)">
+                          {reinforcementInfo.map((r,ri)=>(
+                            <span key={ri} className="mr-3 fp-num">{r.layer} + {r.geogrid} → modulus ×{r.mif}</span>
+                          ))}
+                        </Notice>
+                      )}
+                      {optimizeWarnings && optimizeWarnings.length > 0 && (
+                        <details className="group rounded-[var(--radius-control)] border border-[var(--hairline)] bg-[var(--surface-sunken)]" open={nDesigns === 0}>
+                          <summary className="cursor-pointer select-none list-none flex items-center gap-1.5 px-3 py-2 text-[13px] font-semibold text-[var(--text-main)]">
+                            <ChevronDown size={14} className="transition-transform group-open:rotate-180" aria-hidden="true"/>
+                            Show the {optimizeWarnings.length} engine note{optimizeWarnings.length === 1 ? '' : 's'}
+                          </summary>
+                          <ul className="m-0 px-3 pb-3 pl-8 list-disc space-y-1 text-[12.5px] leading-relaxed text-[var(--text-main)]">
+                            {optimizeWarnings.map((w, wi) => <li key={wi}>{w}</li>)}
+                          </ul>
+                        </details>
+                      )}
+                    </div>
+                  </Tile>
+                )}
+              </>
+            )}
+
+            {/* ═══ EVALUATE: point results ═══ */}
+            {!optimizationMode && results && !isSolving && (
+              <Tile id="tile-results" title="Point results" icon={Table2} className="col-span-12"
+                actions={<>
+                  <Chip tone="muted"><span className="fp-num">{results.length}</span>&nbsp;point{results.length === 1 ? '' : 's'}</Chip>
+                  {evalVerdict?.stale && <Chip tone="warn" title="An input changed after this evaluation — run Evaluate again">Inputs changed</Chip>}
+                </>}>
+                <div className="flex flex-col gap-3">
+                  {evalVerdict && !evalVerdict.roles.ok && (
+                    <Notice tone="warn" title="Analysis points are off the critical interfaces">
+                      The verdict needs a point at the bottom of the bituminous layer and one at the top of the subgrade.{' '}
+                      <button type="button" className="underline font-semibold" onClick={placeIrcPoints}>Place IRC points</button> and evaluate again.
+                    </Notice>
+                  )}
+                  {/* Peak responses: the solve response's governing maxima.
+                      ε_h is the largest TENSILE horizontal strain, max of the
+                      signed ε_t, ε_r (tension +), floored at 0 — the quantity the
+                      IRC fatigue criterion takes (Annex III: an all-compressive
+                      strain is not checked). */}
+                  {(() => {
+                    const maxDisp = Math.max(0, ...results.map(r => Math.abs(r.disp_z || 0)));
+                    const maxEpsH = Math.max(0, ...results.map(r => Math.max(Number(r.eps_t) || 0, Number(r.eps_r) || 0)));
+                    const maxEpsZ = Math.max(0, ...results.map(r => Math.abs(r.eps_z || 0)));
+                    return (
+                      <div className="grid grid-cols-3 gap-4">
+                        <Kpi label={<><span className="normal-case">δz</span> max</>} value={maxDisp.toFixed(3)} unit="mm" title="Maximum |δ_z| across the evaluated points" />
+                        <Kpi label={<><span className="normal-case">εh</span> max (tensile)</>} value={(maxEpsH * 1e6).toFixed(1)} unit="µε"
+                          title="Largest TENSILE horizontal strain across the points — max of the signed ε_t, ε_r (tension positive), 0 when every value is compressive (IRC:37-2018 Annex III)." />
+                        <Kpi label={<><span className="normal-case">εz</span> max</>} value={(maxEpsZ * 1e6).toFixed(1)} unit="µε" title="Maximum |ε_z| across the points — rutting-governing at the top of the subgrade" />
+                      </div>
+                    );
+                  })()}
+                  <button type="button" onClick={() => setShowPointTable(v => !v)} aria-expanded={showPointTable}
+                    className="self-start inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--accent)] hover:underline">
+                    <ChevronRight size={15} className={cn('transition-transform', showPointTable && 'rotate-90')} aria-hidden="true" />
+                    {showPointTable ? 'Hide' : 'Show'} stresses, deflection and strains at every point
+                  </button>
+                  {showPointTable && (
+                    <div className="overflow-auto rounded-[var(--radius-control)] border border-[var(--hairline)] fp-fade-up">
+                    <table className="w-full min-w-[1050px] text-[12.5px] text-left fp-num border-collapse leading-6">
+                    <thead className="text-[11.5px] text-[var(--text-muted)] font-semibold sticky top-0 z-20 bg-[var(--tile-head)]">
+                      <tr className="tracking-wide">
+                        <th colSpan={3} className="py-1.5 px-3 border-b border-[var(--hairline)]">Location</th>
+                        <th colSpan={4} className="py-1.5 px-3 border-b border-[var(--hairline)]">Stress state (MPa)</th>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)]">Deflection</th>
+                        <th colSpan={3} className="py-1.5 px-3 border-b border-[var(--hairline)] text-[var(--accent)]">Strains (failure checks)</th>
+                      </tr>
+                      <tr>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)]">Role</th>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)]">z (mm)</th>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)]">r (mm)</th>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ<sub>z</sub></th>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ<sub>t</sub></th>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)]">σ<sub>r</sub></th>
+                        <th
+                          className="py-1.5 px-3 border-b border-[var(--hairline)] cursor-help"
+                          title={"τ_rz — vertical shear stress (MPa). Not used by any IRC:37 design criterion (fatigue uses ε_t/ε_r, rutting uses ε_z, CTB uses σ_t).\n\nIITPAVE convention note: for a dual wheel evaluated on the symmetry axis (R = spacing/2), the two wheels' shear contributions cancel, so the physically-correct elastic value is ≈ 0 — which is what this solver reports. The original IITPAVE instead reports ≈ 2× the single-wheel shear here, because it superimposes the two wheels without the symmetry sign-flip. The two agree on all design quantities (σ, ε, δ) to <1%; only this non-design shear differs."}
+                        >τ<sub>rz</sub><span className="align-super text-[9px] ml-0.5">&#9432;</span></th>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)]">δ<sub>z</sub> (mm)</th>
+                        <th
+                          className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent)] cursor-help"
+                          title="ε_r — radial horizontal strain (tension positive). The IRC:37 fatigue criterion uses the largest TENSILE horizontal strain, max of the signed ε_t, ε_r at the bottom of the bituminous layer; under dual wheels at R = 155 mm, ε_r can govern over ε_t. If both are compressive, fatigue is not checked (IRC:37-2018 Annex III)."
+                        >ε<sub>r</sub><span className="align-super text-[9px] ml-0.5">&#9432;</span></th>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--info)] sticky right-24 z-20 bg-[var(--tile-head)]">ε<sub>z</sub></th>
+                        <th className="py-1.5 px-3 border-b border-[var(--hairline)] border-l text-[var(--accent)] sticky right-0 z-20 bg-[var(--tile-head)]">ε<sub>t</sub></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {results.map((r,i)=>{
+                        const role = evalVerdict?.roles.bit_bottom.includes(i) ? 'εt' : evalVerdict?.roles.sub_top.includes(i) ? 'εv' : null;
+                        return (
+                          <tr key={i} className="border-b border-[var(--hairline)] hover:bg-[var(--surface-sunken)]">
+                            <td className="py-1 px-3">{role ? <Chip tone="info">{role}</Chip> : <span className="text-[var(--text-muted)]">—</span>}</td>
+                            <td className="py-1 px-3 text-[var(--text-bold)]">{r.z.toFixed(1)}</td>
+                            <td className="py-1 px-3 text-[var(--text-bold)]">{r.r.toFixed(1)}</td>
+                            <td className="py-1 px-3">{formatSci(r.sigma_z)}</td>
+                            <td className="py-1 px-3">{formatSci(r.sigma_t)}</td>
+                            <td className="py-1 px-3">{formatSci(r.sigma_r)}</td>
+                            <td className="py-1 px-3 text-[var(--text-muted)]">{formatSci(r.tau_rz)}</td>
+                            <td className="py-1 px-3">{formatSci(r.disp_z)}</td>
+                            <td className="py-1 px-3 border-l border-[var(--hairline)] text-[var(--text-bold)]">{formatSci(r.eps_r)}</td>
+                            <td className="py-1 px-3 font-semibold text-[var(--info)] border-l border-[var(--hairline)] sticky right-24 z-10 bg-[var(--surface-panel)]">{formatSci(r.eps_z)}</td>
+                            <td className="py-1 px-3 font-semibold text-[var(--accent)] border-l border-[var(--hairline)] sticky right-0 z-10 bg-[var(--surface-panel)]">{formatSci(r.eps_t)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    </table>
+                    </div>
+                  )}
+                </div>
+              </Tile>
             )}
           </div>
-        </Tile>
-      </main>
+        </main>
+      </div>
 
       {/* Help Modal */}
       {showInstructions && (
@@ -2714,16 +2932,16 @@ export default function App() {
                         Cockpit layout
                       </h3>
                       <p className="mb-2">
-                        The cockpit is a grid of tiles; each tile holds one part of the design and shows its result live:
+                        The inputs sit in a rail of six numbered sections on the left, with <strong>Evaluate</strong> (Ctrl+Enter) and <strong>Optimize</strong> (Ctrl+Shift+Enter) at its foot; the results fill the tiles on the right:
                       </p>
                       <ul className="list-disc ml-5 space-y-1.5 mb-3 text-[11px]">
-                        <li><strong>App bar:</strong> design traffic and reliability, <strong>Evaluate</strong> (Ctrl+Enter) and <strong>Optimize</strong> (Ctrl+Shift+Enter), use cases, Import/Export, PDF report, Advanced panels and the light/dark theme.</li>
-                        <li><strong>Layer structure:</strong> material, Fixed/Opt mode, modulus (Auto Eq. 7.1 for unbound granular layers, Auto Table 9.2 for bituminous layers), Poisson's ratio and thickness or range. Hovering a row highlights the layer in the cross-section.</li>
-                        <li><strong>Traffic · design basis:</strong> road category, carriageway (sets the LDF, IRC §4.5.1), CVPD, growth, years to opening, design period, VDF with the Table 4.2 indicative value.</li>
-                        <li><strong>Bituminous mix · climate:</strong> binder grade and pavement temperature (Table 9.2 modulus), Va and Vbe (fatigue C factor).</li>
-                        <li><strong>Load · subgrade:</strong> subgrade CBR (resilient modulus by Eq. 6.1/6.2) and the wheel load; the IRC standard axle is flagged.</li>
-                        <li><strong>Design limits:</strong> allowable fatigue and rutting strains for the design traffic, and the long-life (§10) option.</li>
-                        <li><strong>Cross-section:</strong> live section with loads, dimensions and analysis points; drag its left edge to resize.</li>
+                        <li><strong>① Pavement layers:</strong> material, Fixed/Opt mode, thickness or range, modulus (Auto Eq. 7.1 for unbound granular layers, Auto T 9.2 for bituminous layers) and the IRC minimum; the chevron opens Poisson's ratio and the geogrid. Hovering a layer highlights it in the cross-section and the crust chart.</li>
+                        <li><strong>② Traffic · design basis:</strong> road category, carriageway (sets the LDF, IRC §4.5.1), CVPD, growth, design period, VDF with the Table 4.2 indicative value; years to opening, LDF and terrain under <i>More</i>.</li>
+                        <li><strong>③ Bituminous mix · climate:</strong> binder grade and pavement temperature (Table 9.2 modulus), Va and Vbe (fatigue C factor).</li>
+                        <li><strong>④ Subgrade · load:</strong> subgrade CBR (resilient modulus by Eq. 6.1/6.2) and the wheel load; the IRC standard axle is flagged.</li>
+                        <li><strong>⑤ Design checks · optimizer:</strong> the long-life (§10) option, the optimizer objectives, material rates and the CTB axle spectrum.</li>
+                        <li><strong>⑥ Analysis points:</strong> follows the IRC critical points of the stack until a point is edited.</li>
+                        <li><strong>Verdict tile:</strong> the governing demand/capacity ratio of the evaluated section, or of the optimized design picked with <strong>Inspect</strong>, with one ring per criterion. The strain tiles compare εt and εv with their allowable values; the profile tile plots strain against depth over the layers.</li>
                       </ul>
                     </div>
 
@@ -2734,10 +2952,10 @@ export default function App() {
                       </h3>
                       <ol className="list-decimal ml-5 space-y-2 text-[11px]">
                         <li>
-                          <strong>Define the trial structure:</strong> in the Layer structure tile, set the materials, thicknesses <i>h</i> (mm), resilient moduli <i>E</i> (MPa) and Poisson's ratios <i>ν</i>.
+                          <strong>Define the trial structure:</strong> in ① Pavement layers, set the materials, thicknesses <i>h</i> (mm), resilient moduli <i>E</i> (MPa) and Poisson's ratios <i>ν</i>.
                         </li>
                         <li>
-                          <strong>Set the traffic and the subgrade:</strong> enter the CVPD, growth, design period, VDF and carriageway in the Traffic tile (the design traffic in msa follows from IRC Eq. 4.5/4.6) and the subgrade CBR in the Load · subgrade tile. The resilient modulus M<sub>RS</sub> is computed from:
+                          <strong>Set the traffic and the subgrade:</strong> enter the CVPD, growth, design period, VDF and carriageway in ② Traffic (the design traffic in msa follows from IRC Eq. 4.5/4.6) and the subgrade CBR in ④ Subgrade · load. The resilient modulus M<sub>RS</sub> is computed from:
                           <div className="bg-[var(--surface-sunken)] p-2 rounded-md font-mono my-1.5 text-[10px] text-[var(--text-bold)] border border-[var(--hairline)]">
                             CBR ≤ 5%: MR = 10 × CBR (MPa) <br />
                             CBR &gt; 5%: MR = 17.6 × CBR^0.64 (MPa)
@@ -2747,7 +2965,7 @@ export default function App() {
                           <strong>Check the load:</strong> IRC:37-2018 analyses the standard axle — a dual-wheel set of 20 kN per wheel at 0.56 MPa, 310 mm centre to centre. Other loads can be studied, and are flagged as non-standard.
                         </li>
                         <li>
-                          <strong>Position Analysis Coordinates:</strong> Add coordinates in the Analysis points tile where you want stresses and strains, or press <strong>IRC points</strong> to place the critical locations (bottom of the bituminous layer, top of the subgrade).
+                          <strong>Analysis points:</strong> ⑥ follows the IRC critical locations (bottom of the bituminous layer, top of the subgrade) by default; switch it off to add your own coordinates, and press <strong>IRC points</strong> to return to them.
                         </li>
                         <li>
                           <strong>Evaluate or Optimize:</strong> Click <strong>Evaluate</strong> for a single analysis of the current thicknesses, or check <strong>Opt</strong> on layers and click <strong>Optimize</strong> to search range-based adequate designs.
@@ -2803,7 +3021,7 @@ export default function App() {
                       <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2">IRC:37-2018 design basis in the cockpit</h3>
                       <ul className="list-disc ml-5 space-y-1.5 text-[11px]">
                         <li><strong>Bituminous modulus (§9.2, Table 9.2):</strong> with Auto, BC/DBM take the Table 9.2 value for the binder grade and average annual pavement temperature (20–40 °C; about 35 °C in the plains). All bituminous layers are analysed as one layer with the modulus of the bottom mix, in Evaluate, the advanced panels and the optimizer alike. A pinned (tested) value must not exceed the table value.</li>
-                        <li><strong>Allowable strains:</strong> the Design limits tile solves Eq. 3.1–3.4 for the strain that uses up the design traffic, so the evaluated strains can be compared directly (Annex II.6: 145 µε and 292 µε at 150 msa for VG40).</li>
+                        <li><strong>Allowable strains:</strong> the strain tiles solve Eq. 3.1–3.4 for the strain that uses up the design traffic, so the evaluated strains can be compared directly (Annex II.6: 145 µε and 292 µε at 150 msa for VG40).</li>
                         <li><strong>Long-life pavements (§10, §4.3.1, Annex II.6):</strong> recommended from 300 msa and for expressways. The optimizer then also keeps the bituminous tensile strain within 80 µε and the subgrade strain within 200 µε.</li>
                         <li><strong>Traffic (§4.4–4.6):</strong> the carriageway type sets the lane distribution factor (§4.5.1); Table 4.2 gives the indicative VDF when no axle-load survey exists.</li>
                         <li><strong>Crack relief over CTB (§8.3):</strong> either a 100 mm aggregate layer (450 MPa) or a SAMI. A SAMI is not a structural layer, so the bituminous layer sits directly on the CTB in the analysis.</li>
@@ -2857,7 +3075,7 @@ export default function App() {
                     <div className="border-t border-[var(--hairline)] pt-4">
                       <h3 className="text-sm font-bold text-[var(--text-bold)] mb-2">Multi-Objective Optimization Focus</h3>
                       <p className="mb-2 text-[11px]">
-                        The archetypes follow the objectives switched on in the Optimizer tile:
+                        The archetypes follow the objectives switched on in ⑤ Design checks · optimizer:
                       </p>
                       <ul className="list-disc ml-5 space-y-1 text-[11px]">
                         <li><strong>Thickness:</strong> Minimizes total structural height to save excavation depth.</li>

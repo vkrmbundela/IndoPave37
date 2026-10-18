@@ -13,26 +13,29 @@ IndoPave-37 features a single-page, **Zero-Scroll CAD Cockpit** designed for des
 * **Antigravity (Dark)**: Deep indigo/slate layout designed to reduce eye strain during technical analysis.
 
 ### Dashboard Layout
-The cockpit is a grid of tiles (a "bento" layout). Each tile holds one part of the design and shows its result live; on narrow screens the tiles stack.
+The inputs sit in a rail of six numbered, collapsible sections on the left, with **Evaluate** (Ctrl+Enter) and **Optimize** (Ctrl+Shift+Enter) pinned to its foot. The results fill a bento canvas of tiles on the right, sized by importance. Below 1024 px the rail stacks above the canvas.
 ```
-+---------------------------------------------------------------------------------------+
-| APP BAR: design msa · R · CBR | Evaluate (Ctrl+Enter) | Optimize (Ctrl+Shift+Enter) |  |
-|          Use cases · Import · Export · PDF · Advanced · Help · IRC:37 · theme · Reset  |
-+----------------------------------------------------------+----------------------------+
-| LAYER STRUCTURE: material, Fixed/Opt, E (Auto Eq. 7.1 /  | CROSS-SECTION              |
-| Auto Table 9.2), nu, thickness or range, IRC minimum     | (linked hover; drag the    |
-+-------------------+-------------------+------------------+  left edge to resize)      |
-| TRAFFIC · BASIS   | BITUMINOUS MIX    | LOAD · SUBGRADE  |                            |
-| road, carriageway | binder, temp,     | CBR -> MRS,      |                            |
-| (LDF), CVPD, VDF  | Va, Vbe, C        | standard axle    |                            |
-+-------------------+-------------------+------------------+----------------------------+
-| DESIGN LIMITS: msa, R, allowable et / ev,| OPTIMIZER:     | ANALYSIS POINTS            |
-| long-life (Sec 10)                       | objectives     | (IRC points, roles)        |
-+------------------------------------------+----------------+----------------------------+
-| RESULTS: Evaluate verdict (CDF bars) + stress/strain table, or archetype cards with   |
-|          utilization bars + comparison                                                |
-+---------------------------------------------------------------------------------------+
++--------------------------------------------------------------------------------------------+
+| APP BAR: Use cases · Import · Export · PDF · Advanced · Help · IRC:37 · theme · Reset      |
++----------------------+---------------------------------------------+-----------------------+
+| INPUT RAIL           | VERDICT: ring of the governing ratio,       | CROSS-SECTION         |
+| 1 Pavement layers    | IRC-adequate / not, crust, one ring per     | (linked hover) and    |
+| 2 Traffic · basis    | criterion (fatigue, rutting, CTB, long-life)| the analysed moduli   |
+| 3 Bituminous mix     +----------------------+----------------------+                       |
+| 4 Subgrade · load    | FATIGUE STRAIN et    | RUTTING STRAIN ev    |                       |
+| 5 Design checks ·    | actual / allowable   | actual / allowable   |                       |
+|   optimizer          +----------------------+----------------------+-----------------------+
+| 6 Analysis points    | DESIGN TRAFFIC msa   | COST · CARBON        | CRUST COMPOSITION     |
+|                      | + cumulative curve   | + share by layer     | (donut)               |
+|                      +----------------------+----------------------+-----------------------+
+|                      | STRAIN-DEPTH PROFILE: eh (tension +) and ev (compression +) against   |
+|                      | depth over the layer bands, with the allowable and long-life limits   |
+| [Evaluate][Optimize] +-----------------------------------------------------------------------+
+|                      | RESULTS: archetype cards (ring, utilization bars, Inspect, Use) and    |
+|                      | the trade-off bars; or the Evaluate point results                     |
++----------------------+-----------------------------------------------------------------------+
 ```
+The verdict, strain, cost, crust and profile tiles show the evaluated trial section, or the optimized design picked with **Inspect**; before a run they show the design basis and the allowable strains.
 
 ---
 
@@ -56,31 +59,31 @@ IndoPave-37's structural engine is validated against the **IRC:37-2018 Annex-II 
 ## 3. Step-by-Step Pavement Design Workflow
 
 ### Step 1: Configure Layer Structure
-In the **Layer structure** tile:
+In rail section **① Pavement layers**:
 1. **Material**: `BC`, `DBM`, `BM`, `SDBC`, `SMA` (bituminous), `WMM`, `WBM`, `GSB`, `CRL` (granular), `CTB`, `CTSB` (cement treated) or `RAP` (stabilised RAP base).
-2. **Mode**: `Fixed` thickness, or `Opt` with a min–max range for the optimizer. Evaluate analyses a range layer at its minimum.
-3. **Modulus E**: leave **Auto** on — granular layers follow IRC Eq. 7.1 on the effective modulus of the layers below; bituminous layers take the Table 9.2 value for the binder grade and pavement temperature. Untick Auto to pin a tested value (IRC §9.2: it must not exceed Table 9.2). All bituminous layers are analysed with the bottom mix's modulus (§9.2), shown under the upper rows.
+2. **Mode**: `Fixed` thickness, or `Opt` with a min–max range for the optimizer. Evaluate analyses a range layer at its minimum. The chevron opens Poisson's ratio, the auto-modulus switch and the geogrid.
+3. **Modulus E**: leave **Auto** on — granular layers follow IRC Eq. 7.1 on the effective modulus of the layers below; bituminous layers take the Table 9.2 value for the binder grade and pavement temperature. Switch Auto off to pin a tested value (IRC §9.2: it must not exceed Table 9.2). All bituminous layers are analysed with the bottom mix's modulus (§9.2), noted under the upper layers.
 4. **IRC minimum**: the minimum thickness IRC enforces for the layer (e.g. WMM 150 mm §8.1, GSB 100 mm §7.2.2, crack-relief 100 mm §8.3); red when the layer is below it.
-5. With a **CTB**, either keep a 100 mm aggregate crack-relief layer above it or switch on **SAMI over CTB** (§8.3).
+5. With a **CTB**, either keep a 100 mm aggregate crack-relief layer above it or switch on **SAMI over the CTB** (§8.3).
 
 ### Step 2: Traffic and design basis
-In the **Traffic · design basis** tile:
+In **② Traffic · design basis**:
 * **Road category** sets the reliability (§3.7) and the CTB factor RF.
 * **Carriageway** sets the lane distribution factor (§4.5.1); for a divided carriageway enter the CVPD of one direction (§4.6.1).
-* **CVPD, growth, years to opening, design period, VDF**: the design traffic follows IRC Eq. 4.5/4.6. The **T 4.2** button applies the indicative VDF of Table 4.2 (plain/hilly) when no axle-load survey exists. The design period is flagged when it is below §4.3.1.
+* **CVPD, growth, years to opening, design period, VDF**: the design traffic follows IRC Eq. 4.5/4.6. The **Table 4.2** button applies the indicative VDF of Table 4.2 (plain/hilly) when no axle-load survey exists. The design period is flagged when it is below §4.3.1.
 
-In the **Bituminous mix · climate** tile: binder grade of the bottom mix and the average annual pavement temperature (20–40 °C; about 35 °C in the plains) give the Table 9.2 modulus; Va and Vbe give the fatigue C factor.
+In **③ Bituminous mix · climate**: binder grade of the bottom mix and the average annual pavement temperature (20–40 °C; about 35 °C in the plains) give the Table 9.2 modulus; Va and Vbe give the fatigue C factor.
 
-In the **Load · subgrade** tile: the subgrade CBR gives M<sub>RS</sub> (10 × CBR up to 5 %, 17.6 × CBR<sup>0.64</sup> above). The IRC standard axle (dual wheels, 20 kN each, 0.56 MPa, 310 mm) is the default and is flagged when changed.
+In **④ Subgrade · load**: the subgrade CBR gives M<sub>RS</sub> (10 × CBR up to 5 %, 17.6 × CBR<sup>0.64</sup> above). The IRC standard axle (dual wheels, 20 kN each, 0.56 MPa, 310 mm) is the default and is flagged when changed.
 
 ### Step 3: Design limits
-The **Design limits** tile shows the allowable fatigue and rutting strains for the design traffic (Eq. 3.1–3.4 solved for the strain). Switch on **Long-life pavement** (§10) for 300 msa or more and for expressways: the optimizer then also keeps εt ≤ 80 µε and εv ≤ 200 µε.
+The **strain tiles** show the allowable fatigue and rutting strains for the design traffic (Eq. 3.1–3.4 solved for the strain), and the actual strains once the section is evaluated or optimized. In **⑤ Design checks · optimizer**, switch on **Long-life pavement** (§10) for 300 msa or more and for expressways: the optimizer then also keeps εt ≤ 80 µε and εv ≤ 200 µε.
 
 ### Step 4: Analysis points and Evaluate
-**IRC points** places the critical locations for the current stack: just above the bottom of the bituminous layer (and of a CTB) and just below the top of the subgrade, at r = 0 and between the duals. **Evaluate** reports the stresses and strains and an IRC verdict — fatigue and rutting damage against the current traffic — and flags the result when an input changes afterwards.
+**⑥ Analysis points** follows the IRC critical locations of the current stack by default: just above the bottom of the bituminous layer (and of a CTB) and just below the top of the subgrade, at r = 0 and between the duals. Editing a point switches this off; **IRC points** switches it back on. **Evaluate** gives the IRC verdict — fatigue and rutting damage against the current traffic — with the strain-depth profile, and flags the result when an input changes afterwards; the stresses and strains at every point are one click away under **Point results**.
 
 ### Step 5: Optimize
-Set the layers to vary as `Opt`, choose the objectives in the **Optimizer** tile (thickness always; cost and embodied CO₂ optional, with editable material rates) and click **Optimize**. Each archetype card shows the section, its layer moduli, utilization bars for every IRC check, the critical strains against their allowable values, cost and carbon; **Use** copies a design into the layer table.
+Set the layers to vary as `Opt`, choose the objectives in **⑤ Design checks · optimizer** (thickness always; cost and embodied CO₂ optional, with editable material rates) and click **Optimize**. Each archetype card shows the section, its governing ratio as a ring, its layer moduli, utilization bars for every IRC check, the critical strains against their allowable values, cost and carbon. **Inspect** shows a design in the verdict, strain, crust and profile tiles; **Use** copies it into the layer list. The trade-off tile compares the archetypes' crust, cost and carbon as bars.
 
 ---
 
