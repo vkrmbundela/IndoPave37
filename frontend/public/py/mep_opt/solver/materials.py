@@ -140,13 +140,18 @@ MATERIAL_DB: dict[str, MaterialProperty] = {
     ),
 
     # --- Recycled / RAP ---
+    # Bitumen emulsion / foamed bitumen stabilised RAP base (IRC:37-2018 §8.4,
+    # Table 9.2 and Table 11.1 "Cold recycled base"): 800 MPa, Poisson 0.35,
+    # minimum thickness 100 mm. It is a BASE layer, not part of the
+    # bituminous bundle (the fatigue strain is read at the bottom of the
+    # bituminous layer above it — Fig. 3.4 / Annex-II II.5). It does not
+    # follow the BC/DBM temperature curve (previously it did, giving 2000 MPa).
     "RAP": MaterialProperty(
-        name="Reclaimed Asphalt Pavement (RAP)",
-        category="bituminous",
-        default_modulus=800.0,    # conservative, depends on RAP %
+        name="Emulsion/Foam Bitumen Stabilised RAP Base",
+        category="cold_recycled",
+        default_modulus=800.0,
         poisson=0.35,
         density=2250.0,
-        bitumen_grade=BitumenGrade.VG30,
     ),
 }
 
@@ -233,7 +238,7 @@ def get_modulus(type_code: str,
             return get_bm_modulus(effective_grade, temperature)
         return mat.default_modulus
 
-    # Granular / cement-treated / default
+    # Granular / cement-treated / cold-recycled / default
     return mat.default_modulus
 
 

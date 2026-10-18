@@ -17,11 +17,28 @@ Because our solver is mechanistic (IRC:37 Burmister), the modulus uplift
 flows straight through: lower strains for the same thickness → the optimizer
 can trim the granular layer while staying IRC:37-adequate.
 
-Source:
-  Saride, S., Baadiga, R., Balunaini, U., Madhira, R.M. (2021).
-  "Modulus Improvement Factor-based Design Coefficients for Geogrid and
-  Geocell-reinforced Bases." J. Transp. Eng. Part B: Pavements.
-  (Table: MIF of geogrid-reinforced bases.)
+Sources:
+  Saride, S., Baadiga, R., Balunaini, U., Madhira, R.M. (2022).
+  "Modulus Improvement Factor-Based Design Coefficients for Geogrid- and
+  Geocell-Reinforced Bases." J. Transp. Eng. Part B: Pavements 148(3).
+  (Large-scale model tests; MIF of geogrid-reinforced bases 1.5-3.5.)
+  IRC:SP:59-2019 §3.1.3: "The indicative range of MIF values for geogrid to be
+  used in the design shall be 1.2 to 2" and "Only third party validated MIF
+  values must be used for the design."
+  IRC:37-2018 §7.2.3 / §8.1: un-reinforced base and sub-base moduli are
+  estimated separately (Eq. 7.1, the base resting on the EFFECTIVE modulus of
+  the GSB + subgrade system) and then multiplied by the MIF.
+
+Design rule implemented here (get_mif):
+  * the research table (research_mif) is interpolated linearly in Mrs;
+  * below the smallest tabulated Mrs the first value is held (MIF rises as
+    the subgrade weakens, so holding it is conservative);
+  * above the largest tabulated Mrs the last segment is extrapolated
+    (MIF falls with stiffer subgrade; holding it flat over-states the
+    benefit), never below 1.0;
+  * the result is capped at the IRC:SP:59 design maximum of 2.0.
+The research values above 2.0 (very weak subgrades) are therefore not used
+for design; a project needs third-party-certified MIF to justify more.
 """
 
 from typing import Dict, List, Optional
@@ -48,6 +65,9 @@ GEOGRID_TYPES: Dict[str, Dict[str, str]] = {
 
 NONE_OPTION = "none"
 
+# IRC:SP:59-2019 §3.1.3 — design range of MIF for geogrids is 1.2 to 2.0.
+SP59_GEOGRID_MIF_MAX = 2.0
+
 
 def list_geogrid_types() -> List[Dict[str, str]]:
     """Return geogrid options (including a 'none' sentinel) for UI menus."""
@@ -58,21 +78,11 @@ def list_geogrid_types() -> List[Dict[str, str]]:
     return out
 
 
-def get_mif(subgrade_modulus: float, geogrid_type: Optional[str]) -> float:
+def research_mif(subgrade_modulus: float, geogrid_type: Optional[str]) -> float:
     """
-    Modulus Improvement Factor for a geogrid-reinforced granular base.
-
-    Args:
-        subgrade_modulus: subgrade resilient modulus Mrs (MPa).
-        geogrid_type: one of MIF_TABLE keys ("PP30", "PET30", "PET60"),
-                      or None/"none" for no reinforcement.
-
-    Returns:
-        MIF (>= 1.0). Returns 1.0 (no uplift) for None/"none"/unknown type.
-
-    Interpolation:
-        Linear between the tabulated Mrs points for the chosen geogrid;
-        clamped flat below the smallest and above the largest tabulated Mrs.
+    Raw MIF from the research table (no IRC:SP:59 cap): linear interpolation
+    in Mrs, first value held below the table, last segment extrapolated above
+    it (floored at 1.0). Returns 1.0 for None/"none"/unknown geogrid types.
     """
     if not geogrid_type or geogrid_type == NONE_OPTION:
         return 1.0
@@ -84,12 +94,14 @@ def get_mif(subgrade_modulus: float, geogrid_type: Optional[str]) -> float:
     points = sorted(table.items())  # [(Mrs, MIF), ...] ascending Mrs
     mrs = float(subgrade_modulus)
 
-    # Clamp outside the tabulated range — extrapolating MIF is not supported
-    # by the source data, so hold the nearest measured value.
     if mrs <= points[0][0]:
         return points[0][1]
     if mrs >= points[-1][0]:
-        return points[-1][1]
+        if len(points) < 2:
+            return points[-1][1]
+        (m0, v0), (m1, v1) = points[-2], points[-1]
+        slope = (v1 - v0) / (m1 - m0)
+        return max(1.0, v1 + slope * (mrs - m1))
 
     # Linear interpolation between the bracketing Mrs points.
     for (m0, v0), (m1, v1) in zip(points, points[1:]):
@@ -98,3 +110,19 @@ def get_mif(subgrade_modulus: float, geogrid_type: Optional[str]) -> float:
             return v0 + frac * (v1 - v0)
 
     return points[-1][1]  # unreachable, defensive
+
+
+def get_mif(subgrade_modulus: float, geogrid_type: Optional[str]) -> float:
+    """
+    DESIGN Modulus Improvement Factor for a geogrid-reinforced granular layer:
+    the research MIF capped at the IRC:SP:59-2019 §3.1.3 maximum of 2.0.
+
+    Args:
+        subgrade_modulus: subgrade resilient modulus Mrs (MPa).
+        geogrid_type: one of MIF_TABLE keys ("PP30", "PET30", "PET60"),
+                      or None/"none" for no reinforcement.
+
+    Returns:
+        MIF in [1.0, 2.0]. 1.0 (no uplift) for None/"none"/unknown type.
+    """
+    return min(SP59_GEOGRID_MIF_MAX, research_mif(subgrade_modulus, geogrid_type))

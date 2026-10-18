@@ -45,6 +45,7 @@ export default function SensitivityHeatmap({ sharedState }) {
     const msa = cumulativeMSA({
       cvpd: sharedState.cvpd, growthRate: sharedState.growthRate,
       designLife: sharedState.designLife, ldf: sharedState.ldf, vdf: sharedState.vdf,
+      constructionYears: sharedState.constructionYears ?? 0,
     });
     const mixE = bottomBituminousModulus(sharedState.layers, sharedState.numLayers);
 

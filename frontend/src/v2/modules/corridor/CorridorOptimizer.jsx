@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Route, Upload, Play, Download, FileText } from 'lucide-react';
+import { Route, Upload, Play, Download, FileText, AlertCircle } from 'lucide-react';
 import { getSolverMode } from '../../../lib/solver-client';
+import { ROAD_CATEGORIES } from '../../../lib/irc';
 
 // This module talks to the FastAPI backend directly (multipart CSV upload +
 // job polling) — it has no Pyodide equivalent. AdvancedPanel disables the tab
@@ -25,13 +26,21 @@ const SAMPLE_CSV = `Chainage,Subgrade_CBR,CVPD,VDF,LDF
 1+500,5,600,2.0,0.75
 2+000,7,900,2.5,0.75`;
 
-export default function CorridorOptimizer() {
+const roadCategoryLabel = (id) => ROAD_CATEGORIES.find((c) => c.id === id)?.label || id;
+
+export default function CorridorOptimizer({ sharedState }) {
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  // Road category the current/last job was submitted with (the cockpit value
+  // may change afterwards; the results must name the one actually used).
+  const [jobRoadCategory, setJobRoadCategory] = useState(null);
   const fileRef = useRef(null);
   const pollRef = useRef(null);
+  // IRC:37-2018 §3.7 road category from the cockpit. Reliability is NOT sent:
+  // the backend escalates it per §3.7 from the category and each section's MSA.
+  const roadCategory = sharedState?.roadCategory || 'other';
 
   const handleFile = (e) => {
     const f = e.target.files?.[0];
@@ -59,7 +68,8 @@ export default function CorridorOptimizer() {
       const formData = new FormData();
       formData.append('file', file);
 
-      const res = await fetch(`${API_BASE}/api/v2/corridor`, {
+      setJobRoadCategory(roadCategory);
+      const res = await fetch(`${API_BASE}/api/v2/corridor?road_category=${encodeURIComponent(roadCategory)}`, {
         method: 'POST',
         body: formData,
       });
@@ -188,6 +198,16 @@ export default function CorridorOptimizer() {
         <h2 className="text-sm font-bold text-gray-900">Corridor Optimization</h2>
         <span className="text-[10px] text-gray-400">Batch section-by-section optimization from CSV</span>
       </div>
+      <div
+        className="text-[10px] text-gray-500"
+        title="IRC:37-2018 §3.7: 90% reliability for Expressways, NH, SH and urban roads at any traffic; other roads 90% at ≥ 20 msa, else 80%. The backend applies this per section."
+      >
+        Road category{jobRoadCategory ? ' used' : ''}:{' '}
+        <span className="font-semibold text-gray-700">{roadCategoryLabel(jobRoadCategory || roadCategory)}</span>
+        {jobRoadCategory && jobRoadCategory !== roadCategory
+          ? <span className="text-amber-700"> (cockpit now: {roadCategoryLabel(roadCategory)})</span>
+          : <span className="text-gray-400"> (from the cockpit; reliability set per IRC:37-2018 §3.7)</span>}
+      </div>
 
       {/* Upload */}
       {!status?.status && (
@@ -239,23 +259,43 @@ export default function CorridorOptimizer() {
         <div className="p-3 bg-red-50 border border-red-200 rounded text-[11px] text-red-700">{error}</div>
       )}
 
-      {/* Corridor Strategy */}
-      {status?.corridor_strategy && (
-        <div className="border border-emerald-200 bg-emerald-50 rounded p-3">
-          <h3 className="text-[11px] font-bold text-emerald-800 mb-2">Unified Corridor Strategy</h3>
-          <div className="flex items-center gap-4 text-[11px]">
-            <span className="text-emerald-700">
-              Thicknesses: {status.corridor_strategy.unified_thicknesses.map(t => `${t}mm`).join(' / ')}
-            </span>
-            <span className="font-mono text-emerald-800 font-bold">
-              Total: {status.corridor_strategy.total_thickness} mm
-            </span>
-            <span className="text-emerald-600">
-              ({status.corridor_strategy.sections_optimized}/{status.corridor_strategy.sections_total} sections)
-            </span>
+      {/* Corridor Strategy. The backend verifies the per-layer envelope
+          against EVERY section; when it fails anywhere, it is not a safe
+          single corridor section and is shown as a warning. */}
+      {status?.corridor_strategy && (() => {
+        const cs = status.corridor_strategy;
+        const notAdequate = cs.unified_adequate_all_sections === false;
+        const failing = Array.isArray(cs.unified_failing_sections) ? cs.unified_failing_sections : [];
+        return (
+          <div className={`border rounded p-3 ${notAdequate ? 'border-amber-300 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+            <h3 className={`text-[11px] font-bold mb-2 ${notAdequate ? 'text-amber-900' : 'text-emerald-800'}`}>
+              Unified Corridor Strategy{notAdequate ? ' — not adequate for every section' : ''}
+            </h3>
+            <div className="flex items-center gap-4 text-[11px]">
+              <span className={notAdequate ? 'text-amber-800' : 'text-emerald-700'}>
+                Thicknesses: {cs.unified_thicknesses.map(t => `${t}mm`).join(' / ')}
+              </span>
+              <span className={`font-mono font-bold ${notAdequate ? 'text-amber-900' : 'text-emerald-800'}`}>
+                Total: {cs.total_thickness} mm
+              </span>
+              <span className={notAdequate ? 'text-amber-700' : 'text-emerald-600'}>
+                ({cs.sections_optimized}/{cs.sections_total} sections)
+              </span>
+            </div>
+            {notAdequate && (
+              <div className="mt-2 flex items-start gap-1.5 text-[11px] text-red-700">
+                <AlertCircle size={13} className="mt-0.5 shrink-0" />
+                <span>
+                  The envelope (thickest value of each layer) fails the IRC:37 check at{' '}
+                  {failing.length || 'one or more'} section(s){failing.length ? ': ' : '.'}
+                  {failing.length > 0 && <span className="font-mono font-semibold">{failing.join(', ')}</span>}
+                  {failing.length > 0 && '.'} Do not adopt it as one corridor section without redesigning these chainages.
+                </span>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Results Table */}
       {status?.sections?.length > 0 && (
@@ -277,17 +317,26 @@ export default function CorridorOptimizer() {
               </thead>
               <tbody>
                 {status.sections.map((s, i) => (
-                  <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-2 py-1 font-mono">{s.chainage}</td>
-                    <td className="px-2 py-1">{s.cbr}%</td>
-                    <td className="px-2 py-1 font-mono">{s.msa}</td>
-                    <td className={`px-2 py-1 font-medium ${s.status === 'ok' ? 'text-emerald-600' : 'text-red-500'}`}>{s.status}</td>
-                    <td className="px-2 py-1 font-mono text-gray-600">{s.thicknesses.join(' / ')}</td>
-                    <td className="px-2 py-1 font-mono font-medium">{s.total_thickness}</td>
-                    <td className="px-2 py-1 font-mono">{s.cost_per_km?.toLocaleString()}</td>
-                    <td className="px-2 py-1 font-mono">{s.cdf_f?.toFixed(3)}</td>
-                    <td className="px-2 py-1 font-mono">{s.cdf_r?.toFixed(3)}</td>
-                  </tr>
+                  <React.Fragment key={i}>
+                    <tr className="border-b border-gray-50 hover:bg-gray-50">
+                      <td className="px-2 py-1 font-mono">{s.chainage}</td>
+                      <td className="px-2 py-1">{s.cbr}%</td>
+                      <td className="px-2 py-1 font-mono">{s.msa}</td>
+                      <td className={`px-2 py-1 font-medium ${s.status === 'ok' ? 'text-emerald-600' : 'text-red-500'}`}>{s.status}</td>
+                      <td className="px-2 py-1 font-mono text-gray-600">{s.thicknesses.join(' / ')}</td>
+                      <td className="px-2 py-1 font-mono font-medium">{s.total_thickness}</td>
+                      <td className="px-2 py-1 font-mono">{s.cost_per_km?.toLocaleString()}</td>
+                      <td className="px-2 py-1 font-mono">{s.cdf_f?.toFixed(3)}</td>
+                      <td className="px-2 py-1 font-mono">{s.cdf_r?.toFixed(3)}</td>
+                    </tr>
+                    {s.status === 'no_adequate_design' && (
+                      <tr className="border-b border-gray-50">
+                        <td colSpan={9} className="px-2 pb-1.5 text-[10px] text-red-600">
+                          {s.reason || 'No IRC-adequate design within the layer bounds for this section.'}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>

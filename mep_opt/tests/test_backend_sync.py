@@ -49,6 +49,22 @@ def _sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
+def test_pyodide_top_level_solver_in_sync():
+    """
+    The browser Evaluate path imports a top-level ``py/burmister.py`` (the
+    worker's ``import burmister``), separate from the mirrored package. It must
+    carry the same solver as the backend.
+    """
+    backend = _BACKEND / "solver" / "burmister.py"
+    browser = _REPO / "frontend" / "public" / "py" / "burmister.py"
+    assert browser.exists(), f"missing browser solver copy: {browser}"
+    assert _sha(backend) == _sha(browser), (
+        "ENGINE DRIFT: frontend/public/py/burmister.py differs from "
+        "mep_opt/solver/burmister.py — the browser Evaluate path would run a "
+        "different solver than the backend."
+    )
+
+
 @pytest.mark.parametrize("rel", MIRRORED)
 def test_pyodide_copy_in_sync(rel):
     backend = _BACKEND / rel

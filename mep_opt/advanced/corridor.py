@@ -118,10 +118,81 @@ def parse_corridor_csv(csv_text: str) -> list[dict]:
     return sections
 
 
+def _section_problem(section: dict, layer_constraints: list[dict],
+                     growth_rate: float, design_life: int,
+                     reliability: int, road_category: str = "other",
+                     fixed_thicknesses: Optional[list] = None) -> OptimizationProblem:
+    """Build the OptimizationProblem for one chainage section."""
+    traffic = TrafficInput(
+        initial_aadt=0,
+        commercial_vehicles_per_day=section["cvpd"],
+        traffic_growth_rate=growth_rate,
+        design_life_years=design_life,
+        lane_distribution_factor=section["ldf"],
+        vehicle_damage_factor=section["vdf"],
+    )
+    subgrade = SubgradeInput(cbr=section["cbr"])
+
+    layer_types: list[str] = []
+    thickness_bounds: dict[str, tuple[float, float]] = {}
+    layer_props: dict[str, dict] = {}
+    for idx, c in enumerate(layer_constraints):
+        l_type = c["layer_type"]
+        layer_types.append(l_type)
+        # Only pin a custom E when one is supplied. When E is None (e.g. for
+        # unbound granular layers) it is omitted so build_layer_stack derives
+        # the modulus from IRC:37-2018 Eq. 7.1 (thickness + support based)
+        # rather than using a flat placeholder.
+        layer_props[l_type] = {"nu": c["nu"]}
+        if c.get("E") is not None:
+            layer_props[l_type]["E"] = c["E"]
+
+        if fixed_thicknesses is not None:
+            t = float(fixed_thicknesses[idx])
+            thickness_bounds[l_type] = (t, t)
+        elif c.get("is_fixed"):
+            fixed_t = float(
+                c.get(
+                    "fixed_thickness",
+                    c.get("min_thickness", c.get("max_thickness", 0.0)),
+                )
+            )
+            thickness_bounds[l_type] = (fixed_t, fixed_t)
+        else:
+            lo = float(c["min_thickness"])
+            hi = float(c["max_thickness"])
+            if lo > hi:
+                raise ValueError(
+                    f"layer_type {l_type!r}: min_thickness ({lo}) > "
+                    f"max_thickness ({hi})"
+                )
+            thickness_bounds[l_type] = (lo, hi)
+
+    return OptimizationProblem(
+        traffic=traffic,
+        subgrade=subgrade,
+        reliability=_to_reliability_level(reliability),
+        road_category=road_category,
+        layer_types=layer_types,
+        layer_props=layer_props,
+        thickness_bounds=thickness_bounds,
+    )
+
+
+def verify_design_for_section(section: dict, layer_constraints: list[dict],
+                              thicknesses: list, growth_rate: float,
+                              design_life: int, reliability: int,
+                              road_category: str = "other") -> dict:
+    """Evaluate one fixed design against one section's traffic and subgrade."""
+    problem = _section_problem(section, layer_constraints, growth_rate, design_life,
+                               reliability, road_category, fixed_thicknesses=thicknesses)
+    return SmartPavementSearch(problem)._evaluate([float(t) for t in thicknesses])
+
+
 def _run_single_section(section: dict, layer_constraints: list[dict],
                         growth_rate: float, design_life: int,
-                        reliability: int) -> dict:
-    """Run GA optimization for a single chainage section."""
+                        reliability: int, road_category: str = "other") -> dict:
+    """Run the optimizer for a single chainage section."""
     try:
         # Reject empty / malformed layer_constraints early so we surface a
         # clear corridor-section error instead of an opaque crash inside
@@ -138,73 +209,17 @@ def _run_single_section(section: dict, layer_constraints: list[dict],
                 raise ValueError(f"Duplicate layer_type in constraints: {l_type}")
             seen_types.add(key)
 
-        traffic = TrafficInput(
-            initial_aadt=0,
-            commercial_vehicles_per_day=section["cvpd"],
-            traffic_growth_rate=growth_rate,
-            design_life_years=design_life,
-            lane_distribution_factor=section["ldf"],
-            vehicle_damage_factor=section["vdf"],
-        )
-        msa = traffic.cumulative_msa()
-        subgrade = SubgradeInput(cbr=section["cbr"])
-
-        layer_types: list[str] = []
-        thickness_bounds: dict[str, tuple[float, float]] = {}
-        layer_props: dict[str, dict] = {}
-        for c in layer_constraints:
-            l_type = c["layer_type"]
-            layer_types.append(l_type)
-            # Only pin a custom E when one is supplied. When E is None (e.g. for
-            # unbound granular layers) it is omitted so build_layer_stack derives
-            # the modulus from IRC:37-2018 Eq. 7.1 (thickness + support based)
-            # rather than using a flat placeholder.
-            layer_props[l_type] = {"nu": c["nu"]}
-            if c.get("E") is not None:
-                layer_props[l_type]["E"] = c["E"]
-
-            if c.get("is_fixed"):
-                fixed_t = float(
-                    c.get(
-                        "fixed_thickness",
-                        c.get("min_thickness", c.get("max_thickness", 0.0)),
-                    )
-                )
-                thickness_bounds[l_type] = (fixed_t, fixed_t)
-            else:
-                lo = float(c["min_thickness"])
-                hi = float(c["max_thickness"])
-                if lo > hi:
-                    raise ValueError(
-                        f"layer_type {l_type!r}: min_thickness ({lo}) > "
-                        f"max_thickness ({hi})"
-                    )
-                thickness_bounds[l_type] = (lo, hi)
-
-        # Sanity: bounds dict must cover every layer_type we just collected.
-        # With the current loop this is always true, but the explicit check
-        # protects against future edits and matches Issue #9 in Issues.md.
-        missing_bounds = [lt for lt in layer_types if lt not in thickness_bounds]
-        if missing_bounds:
-            raise ValueError(
-                f"thickness_bounds missing for layer_types {missing_bounds} "
-                f"in section {section.get('chainage')!r}"
-            )
-
-        # Build optimization problem
-        problem = OptimizationProblem(
-            traffic=traffic,
-            subgrade=subgrade,
-            reliability=_to_reliability_level(reliability),
-            layer_types=layer_types,
-            layer_props=layer_props,
-            thickness_bounds=thickness_bounds,
-        )
+        problem = _section_problem(section, layer_constraints, growth_rate,
+                                   design_life, reliability, road_category)
+        msa = problem.traffic.cumulative_msa()
         optimizer = SmartPavementSearch(problem)
         result = optimizer.run()
 
-        # Extract best (economy) design
-        if result and hasattr(result, "pareto_front") and result.pareto_front:
+        # Extract the best design. An infeasible run still returns a
+        # "Preliminary" placeholder in pareto_front, so feasibility must be
+        # read from is_feasible — otherwise an inadequate section was
+        # reported as "ok" with CDF 0 and folded into the corridor envelope.
+        if result and getattr(result, "is_feasible", False) and result.pareto_front:
             best = result.pareto_front[0]
             return {
                 "chainage": section["chainage"],
@@ -217,6 +232,7 @@ def _run_single_section(section: dict, layer_constraints: list[dict],
                 "co2_per_km": best.co2,
                 "cdf_f": best.performance.get("CDF_fatigue", 0) if best.performance else 0,
                 "cdf_r": best.performance.get("CDF_rutting", 0) if best.performance else 0,
+                "cdf_ctb": best.performance.get("CDF_ctb") if best.performance else None,
             }
         else:
             return {
@@ -226,10 +242,12 @@ def _run_single_section(section: dict, layer_constraints: list[dict],
                 "status": "no_adequate_design",
                 "thicknesses": [],
                 "total_thickness": 0,
-                "cost_per_km": 0,
-                "co2_per_km": 0,
-                "cdf_f": 0,
-                "cdf_r": 0,
+                "cost_per_km": None,
+                "co2_per_km": None,
+                "cdf_f": None,
+                "cdf_r": None,
+                "cdf_ctb": None,
+                "reason": (result.warnings or [None])[0] if result else None,
             }
     except Exception as e:
         return {
@@ -239,10 +257,11 @@ def _run_single_section(section: dict, layer_constraints: list[dict],
             "status": f"error: {str(e)}",
             "thicknesses": [],
             "total_thickness": 0,
-            "cost_per_km": 0,
-            "co2_per_km": 0,
-            "cdf_f": 0,
-            "cdf_r": 0,
+            "cost_per_km": None,
+            "co2_per_km": None,
+            "cdf_f": None,
+            "cdf_r": None,
+            "cdf_ctb": None,
         }
 
 
@@ -252,6 +271,7 @@ async def start_corridor_job(
     growth_rate: float = 0.05,
     design_life: int = 20,
     reliability: int = 80,
+    road_category: str = "other",
 ) -> str:
     """Start an async corridor optimization job. Returns job_id."""
     job_id = str(uuid.uuid4())[:8]
@@ -267,7 +287,7 @@ async def start_corridor_job(
         for i, section in enumerate(sections):
             result = await asyncio.to_thread(
                 _run_single_section, section, layer_constraints,
-                growth_rate, design_life, reliability,
+                growth_rate, design_life, reliability, road_category,
             )
             _JOBS[job_id]["sections"].append(result)
             _JOBS[job_id]["completed"] = i + 1
@@ -281,11 +301,27 @@ async def start_corridor_job(
                 layer_vals = [s["thicknesses"][li] for s in ok_sections if li < len(s["thicknesses"])]
                 unified.append(round(max(layer_vals), 1) if layer_vals else 0)
 
+            # The envelope (max per layer) is not guaranteed adequate (e.g.
+            # eps_t is non-monotone in thin bituminous layers), so verify it
+            # against EVERY section's traffic and subgrade.
+            failing = []
+            for sec in sections:
+                try:
+                    chk = await asyncio.to_thread(
+                        verify_design_for_section, sec, layer_constraints, unified,
+                        growth_rate, design_life, reliability, road_category,
+                    )
+                    if not chk.get("overall_adequate"):
+                        failing.append(sec["chainage"])
+                except Exception as exc:  # pragma: no cover - defensive
+                    failing.append(f"{sec['chainage']} (error: {exc})")
             _JOBS[job_id]["corridor_strategy"] = {
                 "unified_thicknesses": unified,
                 "total_thickness": round(sum(unified), 1),
                 "sections_optimized": len(ok_sections),
                 "sections_total": len(sections),
+                "unified_adequate_all_sections": not failing,
+                "unified_failing_sections": failing,
             }
 
         _JOBS[job_id]["status"] = "complete"

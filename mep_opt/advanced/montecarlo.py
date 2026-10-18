@@ -10,7 +10,7 @@ from typing import Optional, List, Dict
 from mep_opt.solver.legacy_bridge import run_bridge_from_stack
 from mep_opt.solver.irc37 import check_design_adequacy, ReliabilityLevel
 from mep_opt.advanced._strain_utils import (
-    extract_design_strains, remap_eval_points_to_stack,
+    extract_design_strains, remap_eval_points_to_stack, ADVANCED_SCOPE_NOTE,
 )
 
 _RELIABILITY_MAP = {
@@ -148,4 +148,6 @@ def run_monte_carlo(
         },
         "histogram": histogram,
         "sigmas_used": sigmas[:-1],  # exclude subgrade
+        "reliability": rel.name,
+        "scope": ADVANCED_SCOPE_NOTE,
     }

@@ -13,23 +13,29 @@ IndoPave-37 features a single-page, **Zero-Scroll CAD Cockpit** designed for des
 * **Antigravity (Dark)**: Deep indigo/slate layout designed to reduce eye strain during technical analysis.
 
 ### Dashboard Layout
+The inputs sit in a rail of six numbered, collapsible sections on the left, with **Evaluate** (Ctrl+Enter) and **Optimize** (Ctrl+Shift+Enter) pinned to its foot. The results fill a bento canvas of tiles on the right, sized by importance. Below 1024 px the rail stacks above the canvas.
 ```
-+--------------------------------------------------------------------------------+
-|  HEADER: App Title, Run Solver / Run Optimizer Buttons, Import / Export JSON   |
-+----------------------+---------------------------------------------------------+
-|                      |  MIDDLE: Pavement Layers Grid (Material, Modulus,       |
-|  LEFT:               |          Thickness, Min/Max Limits, Cost, Carbon, etc.) |
-|  Settings Panel      +---------------------------------------------------------+
-|  - Traffic (MSA)     |  RIGHT:                                                 |
-|  - Subgrade CBR      |  CAD Blueprint Visualizer (SVG)                         |
-|  - Temp (°C)         |  - Layer dimension chains & ruler depth                 |
-|  - Axle Specs        |  - Dual/Single tires, axles, load badges, stress bulbs  |
-|                      |  - Interactive green targets (analysis points)          |
-+----------------------+---------------------------------------------------------+
-|  BOTTOM: Output Results (Structural, Economy, Sustainable, Premium cards),     |
-|          Archetype Comparison Charts, and Advanced Feature Tabs                |
-+--------------------------------------------------------------------------------+
++--------------------------------------------------------------------------------------------+
+| APP BAR: Use cases · Import · Export · PDF · Advanced · Help · IRC:37 · theme · Reset      |
++----------------------+---------------------------------------------+-----------------------+
+| INPUT RAIL           | VERDICT: ring of the governing ratio,       | CROSS-SECTION         |
+| 1 Pavement layers    | IRC-adequate / not, crust, one ring per     | (linked hover) and    |
+| 2 Traffic · basis    | criterion (fatigue, rutting, CTB, long-life)| the analysed moduli   |
+| 3 Bituminous mix     +----------------------+----------------------+                       |
+| 4 Subgrade · load    | FATIGUE STRAIN et    | RUTTING STRAIN ev    |                       |
+| 5 Design checks ·    | actual / allowable   | actual / allowable   |                       |
+|   optimizer          +----------------------+----------------------+-----------------------+
+| 6 Analysis points    | DESIGN TRAFFIC msa   | COST · CARBON        | CRUST COMPOSITION     |
+|                      | + cumulative curve   | + share by layer     | (donut)               |
+|                      +----------------------+----------------------+-----------------------+
+|                      | STRAIN-DEPTH PROFILE: eh (tension +) and ev (compression +) against   |
+|                      | depth over the layer bands, with the allowable and long-life limits   |
+| [Evaluate][Optimize] +-----------------------------------------------------------------------+
+|                      | RESULTS: archetype cards (ring, utilization bars, Inspect, Use) and    |
+|                      | the trade-off bars; or the Evaluate point results                     |
++----------------------+-----------------------------------------------------------------------+
 ```
+The verdict, strain, cost, crust and profile tiles show the evaluated trial section, or the optimized design picked with **Inspect**; before a run they show the design basis and the allowable strains.
 
 ---
 
@@ -39,7 +45,7 @@ IndoPave-37 uses elastic layer theory to model multi-layered systems. The bottom
 
 ### Primary Design Failure Criteria (IRC:37-2019)
 The suite calculates and checks design safety against two critical failure modes:
-1. **Bituminous Fatigue Cracking**: Caused by horizontal tensile strain ($\varepsilon_t$) at the bottom of the lowest bituminous layer.
+1. **Bituminous Fatigue Cracking**: Caused by horizontal tensile strain ($\varepsilon_t$) at the bottom of the lowest bituminous layer. The engine takes the largest *tensile* value of the tangential and radial strains under the dual wheels; when they are all compressive (thin layers on strong bases), fatigue is not checked, as in IRC:37-2018 Annex III.
 2. **Subgrade Rutting**: Caused by vertical compressive strain ($\varepsilon_v$) at the top of the subgrade.
 
 ### Reference Validation
@@ -53,38 +59,31 @@ IndoPave-37's structural engine is validated against the **IRC:37-2018 Annex-II 
 ## 3. Step-by-Step Pavement Design Workflow
 
 ### Step 1: Configure Layer Structure
-In the **Pavement Layers Grid**, you can define your trial layers.
-1. **Material Type**: Classify the layer (e.g., `BC` (Bituminous Concrete), `DBM` (Dense Bituminous Macadam), `WMM` (Wet Mix Macadam), `GSB` (Granular Sub-base), or `CTB` (Cement Treated Base)).
-2. **Thickness ($h$)**: Specify the current thickness in millimeters. 
-3. **Modulus ($E$)**: Set the Elastic Modulus of the material in Megapascals (MPa).
-4. **Poisson's Ratio ($\nu$)**: Define the lateral-to-longitudinal strain ratio (typically `0.35` for bituminous/granular layers, `0.20` for CTB, `0.35` or `0.40` for soil).
-5. **Cost & Carbon ($CO_2$)**: Fill in unit costs and CO₂ footprints per cubic meter to compute cost and sustainability metrics during optimization.
+In rail section **① Pavement layers**:
+1. **Material**: `BC`, `DBM`, `BM`, `SDBC`, `SMA` (bituminous), `WMM`, `WBM`, `GSB`, `CRL` (granular), `CTB`, `CTSB` (cement treated) or `RAP` (stabilised RAP base).
+2. **Mode**: `Fixed` thickness, or `Opt` with a min–max range for the optimizer. Evaluate analyses a range layer at its minimum. The chevron opens Poisson's ratio, the auto-modulus switch and the geogrid.
+3. **Modulus E**: leave **Auto** on — granular layers follow IRC Eq. 7.1 on the effective modulus of the layers below; bituminous layers take the Table 9.2 value for the binder grade and pavement temperature. Switch Auto off to pin a tested value (IRC §9.2: it must not exceed Table 9.2). All bituminous layers are analysed with the bottom mix's modulus (§9.2), noted under the upper layers.
+4. **IRC minimum**: the minimum thickness IRC enforces for the layer (e.g. WMM 150 mm §8.1, GSB 100 mm §7.2.2, crack-relief 100 mm §8.3); red when the layer is below it.
+5. With a **CTB**, either keep a 100 mm aggregate crack-relief layer above it or switch on **SAMI over the CTB** (§8.3).
 
-### Step 2: Establish Design Traffic & Environmental Parameters
-In the left sidebar, configure:
-* **Design Traffic (MSA)**: Cumulative Standard Axles expected over the design life.
-* **Subgrade CBR (%)**: California Bearing Ratio. The software automatically computes the Resilient Modulus ($M_{RS}$) using the IRC formula:
-  * For CBR $\le 5$: $M_{RS} = 10 \times CBR$
-  * For CBR $> 5$: $M_{RS} = 17.6 \times CBR^{0.64}$
-* **Temperature (°C)**: Used to adjust temperature-dependent VG-graded bituminous mixes.
+### Step 2: Traffic and design basis
+In **② Traffic · design basis**:
+* **Road category** sets the reliability (§3.7) and the CTB factor RF.
+* **Carriageway** sets the lane distribution factor (§4.5.1); for a divided carriageway enter the CVPD of one direction (§4.6.1).
+* **CVPD, growth, years to opening, design period, VDF**: the design traffic follows IRC Eq. 4.5/4.6. The **Table 4.2** button applies the indicative VDF of Table 4.2 (plain/hilly) when no axle-load survey exists. The design period is flagged when it is below §4.3.1.
 
-### Step 3: Define Load & Configuration Details
-Under **Axle Configuration**:
-* **Wheel Type**: Toggle between `Single` or `Dual` wheel sets.
-* **Load (N)**: Enter the wheel load. The default `20,000 N` represents one wheel set of a standard 80 kN axle distributed across 4 wheels (half-axle load of 40 kN divided by 2 wheels).
-* **Tyre Pressure (MPa)**: Tyre inflation pressure (typically `0.56 MPa` for highway axle loads, and `0.80 MPa` for heavy load/CTB spectrums).
-* **Wheel Spacing (mm)**: Center-to-center distance of the dual wheels (default `310 mm`).
+In **③ Bituminous mix · climate**: binder grade of the bottom mix and the average annual pavement temperature (20–40 °C; about 35 °C in the plains) give the Table 9.2 modulus; Va and Vbe give the fatigue C factor.
 
-### Step 4: Configure Analysis Points
-The **Analysis Points Grid** defines the coordinate offsets where strains are evaluated:
-* **Radial Offset ($r$)**: Radial distance from the wheel center (mm). Use `0 mm` for directly under one wheel and `155 mm` for halfway between dual wheels.
-* **Depth ($z$)**: Depth in millimeters from the surface. The system evaluates points at the bituminous-granular interface and granular-subgrade interface to check fatigue and rutting constraints.
+In **④ Subgrade · load**: the subgrade CBR gives M<sub>RS</sub> (10 × CBR up to 5 %, 17.6 × CBR<sup>0.64</sup> above). The IRC standard axle (dual wheels, 20 kN each, 0.56 MPa, 310 mm) is the default and is flagged when changed.
 
-### Step 5: Choose Optimization Targets & Run
-Under **Opt Target**:
-1. Check **Thickness**, **Cost**, or **Carbon Footprint (CO₂)** to specify optimization priorities.
-2. Under the layers grid, set **Min/Max Thickness Limits** for layers you wish to optimize. Uncheck "Fixed" to allow the optimizer to adjust those thicknesses.
-3. Click **Run Optimizer**.
+### Step 3: Design limits
+The **strain tiles** show the allowable fatigue and rutting strains for the design traffic (Eq. 3.1–3.4 solved for the strain), and the actual strains once the section is evaluated or optimized. In **⑤ Design checks · optimizer**, switch on **Long-life pavement** (§10) for 300 msa or more and for expressways: the optimizer then also keeps εt ≤ 80 µε and εv ≤ 200 µε.
+
+### Step 4: Analysis points and Evaluate
+**⑥ Analysis points** follows the IRC critical locations of the current stack by default: just above the bottom of the bituminous layer (and of a CTB) and just below the top of the subgrade, at r = 0 and between the duals. Editing a point switches this off; **IRC points** switches it back on. **Evaluate** gives the IRC verdict — fatigue and rutting damage against the current traffic — with the strain-depth profile, and flags the result when an input changes afterwards; the stresses and strains at every point are one click away under **Point results**.
+
+### Step 5: Optimize
+Set the layers to vary as `Opt`, choose the objectives in **⑤ Design checks · optimizer** (thickness always; cost and embodied CO₂ optional, with editable material rates) and click **Optimize**. Each archetype card shows the section, its governing ratio as a ring, its layer moduli, utilization bars for every IRC check, the critical strains against their allowable values, cost and carbon. **Inspect** shows a design in the verdict, strain, crust and profile tiles; **Use** copies it into the layer list. The trade-off tile compares the archetypes' crust, cost and carbon as bars.
 
 ---
 
@@ -122,7 +121,7 @@ Switches the design engine to low-volume pavement rules.
 ### 🕸️ Geosynthetic Base Reinforcement (Geogrids)
 Integrate geogrid interlayers to reduce required base thickness.
 * Granular base/sub-base layers allow selection of biaxial or triaxial geogrids.
-* Applies a **Modulus Improvement Factor (MIF)** (e.g., $1.5\times$ or $2.0\times$ modulus multipliers) to simulate mechanical stabilization, enabling thinner aggregate bases while maintaining performance.
+* Applies a **Modulus Improvement Factor (MIF)** to the reinforced layer's Eq. 7.1 modulus (which rests on the effective modulus of the layers below, IRC:37-2018 §8.1), capped at **2.0** — the IRC:SP:59-2019 §3.1.3 design maximum for geogrids. SP:59 requires third-party-validated MIF for the actual product. A geogrid is accepted only on WMM/WBM/GSB, and not on an auto-modulus layer resting on a CTB/CTSB, whose modulus is a fixed IRC value. The reinforced section is analysed with separately estimated moduli, as IRC:37-2018 §7.2.3 / §8.1 prescribe. Each returned design is also compared with the conventional (unreinforced) section. When the geogrid does not lower the governing CDF, the design is flagged "no benefit" with a warning (SP:59 §3.1.3, steps 2 and 4).
 
 ### 🚒 Cement Treated Base (CTB) Axle Spectrum
 When designing with a Cement Treated Base:

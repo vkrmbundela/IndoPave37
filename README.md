@@ -53,7 +53,7 @@ The zero-scroll engineering cockpit is split into interactive control, preview, 
 ### Step 2: Configure Axle Load & Design Parameters
 In the parameters sidebar, configure your project specifics:
 * **Design Traffic**: Set the design traffic loading in Million Standard Axles (MSA).
-* **Reliability Level**: Select the target design reliability — **80% or 90%** (the only two levels defined by IRC:37-2018 §3.7). The optimizer auto-escalates 80% → 90% for design traffic ≥ 20 MSA.
+* **Road Category & Reliability**: Select the road category (Expressway / NH / SH / urban / other). Per IRC:37-2018 §3.7 the design uses **90%** reliability for Expressways, National Highways, State Highways and urban roads at any traffic, and for other roads at ≥ 20 MSA; otherwise 80%. The same category sets the CTB fatigue factor RF of Eq. 3.5 (1 for those roads or ≥ 10 MSA, else 2).
 * **Axle Configuration**: Define wheel loads, contact pressure, and coordinates for structural strain analysis.
 
 ### Step 3: Run the Optimizer

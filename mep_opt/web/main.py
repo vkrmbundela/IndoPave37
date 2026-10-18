@@ -14,9 +14,11 @@ from typing import List, Dict, Any, Optional, Union
 import numpy as np
 from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Project Imports
 from mep_opt.solver.legacy_bridge import is_bridge_available, run_bridge_from_stack
@@ -31,6 +33,15 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI App
 app = FastAPI(title="IndoPave-37 API", version="3.4.2")
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError):
+    """422 with the usual detail list. The default handler echoes the offending
+    input, and a NaN / Infinity input cannot be rendered as JSON (it turned the
+    422 into a 500); non-finite numbers are reported as null instead."""
+    return JSONResponse(status_code=422,
+                        content={"detail": _to_native(jsonable_encoder(exc.errors()))})
 
 # Configure CORS. This is a stateless public API (no cookies/sessions/auth),
 # so credentials are not used. A wildcard origin combined with
@@ -112,6 +123,9 @@ if os.path.exists("frontend/dist"):
 # ---------------------------------------------------------------------------
 
 class LayerInput(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     E: float
     nu: float
     h: float  # 0 for infinite (half-space)
@@ -135,15 +149,39 @@ class LayerInput(BaseModel):
     def h_non_negative(cls, v):
         if v < 0:
             raise ValueError("Layer thickness h must be >= 0")
+        if 0 < v < 1.0:
+            raise ValueError("Layers thinner than 1 mm are not modelled; use 0 for the half-space")
         return v
 
 
 class AnalysisPointInput(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     z: float
     r: float
 
+    @field_validator("z")
+    @classmethod
+    def z_valid(cls, v):
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("depth z must be finite and >= 0 mm")
+        return v
+
+    @field_validator("r")
+    @classmethod
+    def r_valid(cls, v):
+        from mep_opt.solver.burmister import MAX_RADIAL_OFFSET
+        if not math.isfinite(v) or abs(v) > MAX_RADIAL_OFFSET:
+            raise ValueError(
+                f"radial offset r must be finite and within {MAX_RADIAL_OFFSET:.0f} mm of the load")
+        return v
+
 
 class SolveRequest(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     layers: List[LayerInput]
     wheel_load: float = 20000.0     # Load per wheel (N)
     tire_pressure: float = 0.56     # Contact pressure (MPa)
@@ -195,6 +233,9 @@ class SolveResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class LayerConstraint(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     layer_type: str  # BC, DBM, WMM, GSB, etc.
     min_thickness: float
     max_thickness: float
@@ -235,11 +276,13 @@ class LayerConstraint(BaseModel):
             raise ValueError("Poisson ratio nu must be in [0, 0.5)")
         return v
 
-    @field_validator("min_thickness", "max_thickness")
+    @field_validator("min_thickness", "max_thickness", "fixed_thickness")
     @classmethod
     def thickness_non_negative(cls, v):
         if v < 0:
             raise ValueError("Thickness must be non-negative (>= 0)")
+        if 0 < v < 1.0:
+            raise ValueError("Layers thinner than 1 mm are not modelled (use 0 for the subgrade)")
         return v
 
     @field_validator("fixed_thickness")
@@ -262,6 +305,9 @@ class LayerConstraint(BaseModel):
 
 class MaterialRateOverride(BaseModel):
     """Optional per-field override of a single material's unit rate."""
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
     cost_per_cum: Optional[float] = None       # ₹/m³
     co2_per_cum: Optional[float] = None        # kg CO₂/m³
     density: Optional[float] = None            # kg/m³
@@ -288,11 +334,28 @@ class MaterialRateOverride(BaseModel):
             raise ValueError("density must be positive")
         return v
 
+    @field_validator("transport_co2_factor")
+    @classmethod
+    def transport_non_negative(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("transport_co2_factor must be non-negative")
+        return v
+
 
 class AxleLoadGroupInput(BaseModel):
-    axle_type: str
-    load_kn: float
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    axle_type: str          # "single" | "tandem" | "tridem"
+    load_kn: float          # GROSS axle(-group) load, kN
     expected_repetitions: float
+
+    @field_validator("axle_type")
+    @classmethod
+    def axle_type_valid(cls, v):
+        if str(v).strip().lower() not in ("single", "tandem", "tridem"):
+            raise ValueError("axle_type must be 'single', 'tandem' or 'tridem'")
+        return str(v).strip().lower()
 
     @field_validator("load_kn")
     @classmethod
@@ -310,9 +373,18 @@ class AxleLoadGroupInput(BaseModel):
 
 
 class OptimizeRequest(BaseModel):
+    # NaN / Infinity are valid JSON tokens for Starlette; reject them (422).
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    # Commercial vehicles/day as per the last count: directional volume for a
+    # divided carriageway, two-way volume otherwise (IRC:37-2018 §4.6.1).
     cvpd: float
     growth_rate: float
     design_life: int
+    # x in IRC Eq. 4.6: years from the count to completion of construction.
+    construction_years: float = 0.0
+    # IRC:37-2018 §3.7 / Eq. 3.5 road category: expressway | nh | sh | urban | other.
+    road_category: str = "other"
     vdf: float = 2.5
     lane_factor: float = 0.75
     ctb_axle_spectrum: Optional[List[AxleLoadGroupInput]] = None
@@ -348,6 +420,14 @@ class OptimizeRequest(BaseModel):
     optimize_by_cost: bool = False
     optimize_by_co2: bool = False
 
+    # IRC:37-2018 §8.3: a SAMI crack-relief treatment over the CTB (not a
+    # structural layer, so it is not in `layers`) instead of an aggregate
+    # crack-relief layer.
+    has_sami: bool = False
+    # IRC:37-2018 §10 / Annex II.6 long-life pavement (endurance limits
+    # 80 µε bituminous tensile strain, 200 µε subgrade vertical strain).
+    long_life: bool = False
+
     @field_validator("material_rates")
     @classmethod
     def normalize_material_rates(cls, v):
@@ -360,8 +440,21 @@ class OptimizeRequest(BaseModel):
             if isinstance(val, MaterialRateOverride):
                 normalized[k] = val.model_dump(exclude_none=True)
             else:
+                # A bare number is the ₹/m³ rate; a negative rate would
+                # corrupt the Economy archetype.
+                if val < 0:
+                    raise ValueError(f"material_rates[{k}] must be non-negative")
                 normalized[k] = val
         return normalized
+
+    @field_validator("temperature")
+    @classmethod
+    def temperature_range(cls, v):
+        # IRC:37-2018 Table 9.2 tabulates bituminous moduli for 20-40 °C;
+        # outside it the lookup would silently clamp.
+        if not (20.0 <= v <= 40.0):
+            raise ValueError("temperature must be between 20 and 40 °C (IRC:37-2018 Table 9.2)")
+        return v
 
     @field_validator("cvpd")
     @classmethod
@@ -382,6 +475,33 @@ class OptimizeRequest(BaseModel):
     def design_life_positive(cls, v):
         if v <= 0:
             raise ValueError("design_life must be positive")
+        return v
+
+    @field_validator("construction_years")
+    @classmethod
+    def construction_years_range(cls, v):
+        if not (0.0 <= v <= 30.0):
+            raise ValueError("construction_years must be between 0 and 30")
+        return v
+
+    @field_validator("road_category")
+    @classmethod
+    def road_category_valid(cls, v):
+        from mep_opt.solver.irc37 import normalize_road_category
+        return normalize_road_category(v)
+
+    @field_validator("lane_factor")
+    @classmethod
+    def lane_factor_range(cls, v):
+        if not (0.0 < v <= 1.0):
+            raise ValueError("lane_factor must be in (0, 1]")
+        return v
+
+    @field_validator("vdf")
+    @classmethod
+    def vdf_positive(cls, v):
+        if not (v > 0):
+            raise ValueError("vdf must be positive")
         return v
 
     @field_validator("subgrade_cbr")
@@ -471,6 +591,13 @@ class OptimizeRequest(BaseModel):
         if len(v) > 20:
             raise ValueError("Maximum 20 layers supported (got %d)" % len(v))
         types = [str(l.layer_type).strip() for l in v]
+        from mep_opt.optimizer.problem import KNOWN_LAYER_TYPES
+        unknown = [t for t in types if t.lower() != "subgrade" and t not in KNOWN_LAYER_TYPES]
+        if unknown:
+            raise ValueError(
+                f"Unknown layer_type(s) {unknown}; supported: "
+                f"{sorted(KNOWN_LAYER_TYPES)} (plus 'Subgrade')"
+            )
         # Duplicates make layer_props / thickness_bounds dicts ambiguous.
         seen = set()
         dups = []
@@ -484,6 +611,16 @@ class OptimizeRequest(BaseModel):
             raise ValueError(
                 f"Duplicate layer_type entries are not allowed: {sorted(set(dups))}"
             )
+        from mep_opt.solver.irc37 import geogrid_placement_error
+        if any(l.geogrid for l in v if str(l.layer_type).strip().lower() == "subgrade"):
+            raise ValueError("Geogrid reinforcement is only defined for unbound granular layers "
+                             "['GSB', 'WBM', 'WMM'] (got Subgrade)")
+        msg = geogrid_placement_error([
+            (l.layer_type, l.geogrid, l.E) for l in v
+            if str(l.layer_type).strip().lower() != "subgrade"
+        ])
+        if msg:
+            raise ValueError(msg)
         return v
 
 
@@ -562,7 +699,7 @@ async def solve_pavement(data: SolveRequest):
         for i, r in enumerate(raw_results):
             res_dict = {
                 "id": i,
-                "z": data.points[i].z,
+                "z": r.get("z", data.points[i].z),   # depth evaluated (< 0.5 mm -> 0)
                 "r": data.points[i].r,
                 "sigma_z": r.get("sigma_z", 0.0),
                 "sigma_r": r.get("sigma_r", 0.0),
@@ -617,13 +754,14 @@ async def run_optimization(data: OptimizeRequest):
             design_life_years=data.design_life,
             lane_distribution_factor=data.lane_factor,
             vehicle_damage_factor=data.vdf,
+            years_to_completion=data.construction_years,
         )
 
         subgrade = SubgradeInput(cbr=data.subgrade_cbr)
 
         # IRC:37-2018 §3.7 defines only R80 and R90 (the validator rejects
-        # anything else). The optimizer further auto-escalates R80->R90 for
-        # design traffic >= 20 msa.
+        # anything else). The optimizer escalates to R90 for Expressway / NH /
+        # SH / urban roads and for any road at >= 20 msa.
         rel_map = {
             "80%": ReliabilityLevel.R80,
             "90%": ReliabilityLevel.R90,
@@ -662,6 +800,7 @@ async def run_optimization(data: OptimizeRequest):
             traffic=traffic,
             subgrade=subgrade,
             reliability=reliability,
+            road_category=data.road_category,
             temperature=data.temperature,
             air_voids=data.air_voids,
             bitumen_volume=data.bitumen_volume,
@@ -684,6 +823,8 @@ async def run_optimization(data: OptimizeRequest):
             eval_points=[{"z": p.z, "r": p.r} for p in (data.points or [])] if data.points else None,
             optimize_by_cost=data.optimize_by_cost,
             optimize_by_co2=data.optimize_by_co2,
+            has_sami=data.has_sami,
+            long_life=data.long_life,
         )
 
 
@@ -767,7 +908,7 @@ async def run_optimization(data: OptimizeRequest):
         sp72_cls = _sp72.classify(
             cvpd=data.cvpd, vdf=data.vdf, growth_rate=data.growth_rate,
             design_life_years=data.design_life, lane_factor=data.lane_factor,
-            cbr=data.subgrade_cbr,
+            cbr=data.subgrade_cbr, years_to_completion=data.construction_years,
         )
         sp72_out = {
             "is_low_volume": sp72_cls.is_low_volume,
