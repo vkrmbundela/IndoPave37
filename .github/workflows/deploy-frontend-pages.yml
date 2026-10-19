@@ -37,7 +37,9 @@ jobs:
 
       - name: Install Dependencies
         working-directory: frontend
-        run: npm install
+        # Install exactly what package-lock.json pins (fails if it is out of
+        # sync), so the deployed bundle is built only from reviewed versions.
+        run: npm ci
 
       - name: Build Frontend
         working-directory: frontend
