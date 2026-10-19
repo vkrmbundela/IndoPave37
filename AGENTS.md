@@ -18,6 +18,7 @@
 - **Optimization Engine**: **Smart Pavement Search** — deterministic brute-force enumeration of constructable lift sizes + four single-purpose archetypes (Structural / Economy / Sustainable / Premium). Exhaustive over the buildable space, no local-minimum risk, no external dependencies.
 - **Legacy Bridge**: `iitpave_bridge.py` / `legacy_bridge.py` are compatibility shims that route all calls to the native Burmister solver (`solver_facade.py`). No Fortran `.EXE` is invoked.
 - **Engine duplication**: the in-browser (Pyodide) build uses a mirrored copy of the engine under `frontend/public/py/mep_opt/`, plus a top-level `frontend/public/py/burmister.py` used by the browser Evaluate path. Copy every changed engine module to its mirror (`tools/` is git-ignored, so there is no committed sync script); `mep_opt/tests/test_backend_sync.py` fails if any copy drifts.
+- **Content-Security-Policy**: `vite build` injects a CSP `<meta>` into `index.html` (plugin in `frontend/vite.config.js`; GitHub Pages cannot send headers). Scripts and workers come only from the site, inline scripts are allowed by hash, `connect-src` is `'self'` (plus the API origin when the build is not in browser solver mode). A new external script, font, image or API origin must be added there, or the browser blocks it. Security reports: `SECURITY.md`.
 
 ---
 
